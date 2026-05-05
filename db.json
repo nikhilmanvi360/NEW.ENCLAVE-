@@ -1,0 +1,383 @@
+{
+  "users": [],
+  "memory": [
+    {
+      "id": "1778005198282",
+      "claim": "hi",
+      "createdAt": "2026-05-05T18:19:58.282Z",
+      "agentResults": {
+        "skeptic": {
+          "agent": "Skeptic",
+          "stance": "AGAINST",
+          "confidence": 80,
+          "main_argument": "The claim 'hi' lacks substantial evidence and context to support any meaningful interpretation or argument, rendering it too vague for a credible analysis.",
+          "evidence": [
+            {
+              "title": "Wikipedia: HI",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "finding": "The term 'HI' or 'Hi' can refer to various entities, but the claim itself is too vague for a meaningful analysis."
+            },
+            {
+              "title": "Missing Counter-Evidence Renders NLP Fact-Checking Unrealistic for ...",
+              "source": "aclanthology.org",
+              "url": "https://aclanthology.org/2022.emnlp-main.397/",
+              "finding": "The absence of counter-evidence makes fact-checking challenging, especially for vague claims like 'hi'."
+            }
+          ],
+          "search_results": [
+            {
+              "title": "Wikipedia: HI",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "snippet": "Look up hi in Wiktionary, the free dictionary. HI or Hi may refer to: Hello Internet, a podcast hosted by CGP Grey and Brady Haran Hi (magazine), teen-lifestyle",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi-de-Hi!",
+              "url": "https://en.wikipedia.org/wiki/Hi-de-Hi!",
+              "snippet": "Hi -de- Hi ! Hi De Hi Based On The BBC TV Series, Paul Ableman, 1983 Hi -De- Hi Companion, Rob Cope and Mike Fury, 2009 Hi -de- Hi ! at BBC Online Hi -de- Hi !",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi, Hi, Hi",
+              "url": "https://en.wikipedia.org/wiki/Hi%2C_Hi%2C_Hi",
+              "snippet": "\" Hi , Hi , Hi \" is a song written by Paul and Linda McCartney and performed by Wings. It was released as a double A-side single with \"C Moon\" in 1972. The",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi Nanna",
+              "url": "https://en.wikipedia.org/wiki/Hi_Nanna",
+              "snippet": "Hi Nanna (transl. Hi Father) is a 2023 Indian Telugu-language romantic drama film directed by Shouryuv, in his directoral debut, and produced by Vyra Entertainments",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "The fact-checking dilemma: Fact-checking increases the reputation of ...",
+              "url": "https://journals.sagepub.com/doi/10.1177/20531680251323120",
+              "snippet": "Results show that pro-attitudinal messages increased the quality rating of the fact -checker, Chequeado, and made respondents perceive the organization ideologically closer to their views. Counter - attitudinal fact -checking also increases the perceived quality but has no significant effect on the perceived ideology of the fact -checker.",
+              "source": "journals.sagepub.com"
+            },
+            {
+              "title": "\"Fact-checking\" fact checkers: A data-driven approach",
+              "url": "https://misinforeview.hks.harvard.edu/article/fact-checking-fact-checkers-a-data-driven-approach/",
+              "snippet": "This study examined four fact checkers (Snopes, PolitiFact, Logically, and the Australian Associated Press FactCheck ) using a data-driven approach. First, we scraped 22,349 fact -checking articles from Snopes and PolitiFact and compared their results and agreement on verdicts. Generally, the two fact checkers agreed with each other, with only one conflicting verdict among 749 matching claims ...",
+              "source": "misinforeview.hks.harvard.edu"
+            },
+            {
+              "title": "Missing Counter-Evidence Renders NLP Fact-Checking Unrealistic for ...",
+              "url": "https://aclanthology.org/2022.emnlp-main.397/",
+              "snippet": "Here, we contrast and compare NLP fact -checking with how professional fact -checkers combat misinformation in the absence of counter-evidence . In our analysis, we show that, by design, existing NLP task definitions for fact -checking cannot refute misinformation as professional fact -checkers do for the majority of claims.",
+              "source": "aclanthology.org"
+            },
+            {
+              "title": "FactCheck.org - Bias and Credibility - Media Bias/Fact Check",
+              "url": "https://mediabiasfactcheck.com/factcheck/",
+              "snippet": "FactCheck .org is rated Least biased with Very High factual reporting by Media Bias Fact Check .",
+              "source": "mediabiasfactcheck.com"
+            },
+            {
+              "title": "What are documented cases of misinformation or fabrica...",
+              "url": "https://factually.co/fact-checks/media/documented-misinformation-fabricated-evidence-9-11-conspiracy-proponents-4f9cd6",
+              "snippet": "Mainstream debunking efforts cited here rely on FBI photographs of Pentagon wreckage, National Institute of Standards and Technology (NIST) technical reports on building collapses, and repeated fact‑checks ; these are presented as counter‑evidence to common truther claims and are referenced by outlets such as Politifact and Popular Mechanics ...",
+              "source": "factually.co"
+            },
+            {
+              "title": "Credible, Unreliable or Leaked?: Evidence Verification for Enhanced ...",
+              "url": "https://arxiv.org/html/2404.18971",
+              "snippet": "AFC involves tools and systems that help professional fact -checkers to combat misinformation more efficiently by automating pivotal aspects of fact -checking including claim detection, evidence retrieval and claim verification [6]. Figure 1: Pipeline of automated fact -checking leveraging the proposed Evidence Verification Network.",
+              "source": "arxiv.org"
+            }
+          ],
+          "processed_evidence": [
+            {
+              "summary": "The term \"HI\" or \"Hi\" can refer to various entities, including the podcast \"Hello Internet\" or \"Hi (magazine)\".",
+              "source": "https://en.wikipedia.org/wiki/HI",
+              "relevance": 1,
+              "stance": "neutral",
+              "credibility": 7
+            }
+          ],
+          "evidence_summary": {
+            "support_count": 0,
+            "contradict_count": 0,
+            "neutral_count": 1,
+            "average_credibility": 7,
+            "overall_strength": "Weak",
+            "biased_evidence": true
+          },
+          "weakness_of_claim": "The claim 'hi' is too vague and lacks substantial evidence or context, making it difficult to analyze or fact-check."
+        },
+        "supporter": {
+          "agent": "Supporter",
+          "stance": "FOR",
+          "confidence": 50,
+          "main_argument": "The term 'hi' has multiple meanings and is a widely recognized term in various contexts.",
+          "evidence": [
+            {
+              "title": "HI or Hi is a term with multiple meanings",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "finding": "HI or Hi is a term with multiple meanings, including a podcast (\"Hello Internet\") and a magazine (\"Hi (magazine)\")."
+            }
+          ],
+          "search_results": [
+            {
+              "title": "Wikipedia: HI",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "snippet": "Look up hi in Wiktionary, the free dictionary. HI or Hi may refer to: Hello Internet, a podcast hosted by CGP Grey and Brady Haran Hi (magazine), teen-lifestyle",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi-de-Hi!",
+              "url": "https://en.wikipedia.org/wiki/Hi-de-Hi!",
+              "snippet": "Hi -de- Hi ! Hi De Hi Based On The BBC TV Series, Paul Ableman, 1983 Hi -De- Hi Companion, Rob Cope and Mike Fury, 2009 Hi -de- Hi ! at BBC Online Hi -de- Hi !",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi, Hi, Hi",
+              "url": "https://en.wikipedia.org/wiki/Hi%2C_Hi%2C_Hi",
+              "snippet": "\" Hi , Hi , Hi \" is a song written by Paul and Linda McCartney and performed by Wings. It was released as a double A-side single with \"C Moon\" in 1972. The",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi Nanna",
+              "url": "https://en.wikipedia.org/wiki/Hi_Nanna",
+              "snippet": "Hi Nanna (transl. Hi Father) is a 2023 Indian Telugu-language romantic drama film directed by Shouryuv, in his directoral debut, and produced by Vyra Entertainments",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Evaluating Sources | Harvard Guide to Using Sources",
+              "url": "https://usingsources.fas.harvard.edu/evaluating-sources-0",
+              "snippet": "From the many volumes and electronic resources that you have access to through the Harvard library system to the many resources available on the Web, finding information has never been easier. But at times, the sheer volume of information available to you can be overwhelming: How will you know which sources to rely on? How will you decide which sources are appropriate for a particular ...",
+              "source": "usingsources.fas.harvard.edu"
+            },
+            {
+              "title": "OpenEvidence",
+              "url": "https://www.openevidence.com/",
+              "snippet": "America&#x27;s Official Medical Knowledge Platform. OpenEvidence is the leading medical platform for healthcare professionals, featuring answers grounded in peer-reviewed research from NEJM, JAMA, NCCN, Cochrane, and more.",
+              "source": "openevidence.com"
+            },
+            {
+              "title": "HIV Source | HIVINFO | NIH",
+              "url": "https://hivinfo.nih.gov/hiv-source",
+              "snippet": "HIV Source is a portal for HIV-related information (web pages, PDF documents, infographics) from within and outside the federal government. The portal contains information on HIV and AIDS, HIV-related medical conditions, opportunistic infections that can affect people living with HIV, resources and policies from the US government or other governments, resources from organizations around the ...",
+              "source": "hivinfo.nih.gov"
+            },
+            {
+              "title": "Google Scholar",
+              "url": "https://scholar.google.com/",
+              "snippet": "Google Scholar provides a simple way to broadly search for scholarly literature. Search across a wide variety of disciplines and sources : articles, theses, books, abstracts and court opinions.",
+              "source": "scholar.google.com"
+            },
+            {
+              "title": "What Is Considered Supporting Evidence and How It Strengthens Claims",
+              "url": "https://thelegalguide.org/what-is-considered-supporting-evidence-how-it-strengthens/",
+              "snippet": "Supporting evidence refers to information that substantiates a claim, argument, or conclusion. It helps readers assess credibility, understand reasoning, and determine whether conclusions are warranted. In any rigorous process—from academic research to journalism and legal analysis—high-quality supporting evidence is essential. The following sections explain what qualifies as supporting ...",
+              "source": "thelegalguide.org"
+            },
+            {
+              "title": "EHE Overview | HIV.gov",
+              "url": "https://www.hiv.gov/federal-response/ending-the-hiv-epidemic/overview",
+              "snippet": "The Ending the HIV Epidemic initiative focuses on four key evidence -based strategies that, implemented together, can end the HIV epidemic in the U.S.: Diagnose, Treat, Prevent, and Respond.",
+              "source": "hiv.gov"
+            }
+          ],
+          "processed_evidence": [
+            {
+              "summary": "HI or Hi is a term with multiple meanings, including a podcast (\"Hello Internet\") and a magazine (\"Hi (magazine)\"), as listed on a Wikipedia disambiguation page.",
+              "source": "https://en.wikipedia.org/wiki/HI",
+              "relevance": 1,
+              "stance": "neutral",
+              "credibility": 7
+            }
+          ],
+          "evidence_summary": {
+            "support_count": 0,
+            "contradict_count": 0,
+            "neutral_count": 1,
+            "average_credibility": 7,
+            "overall_strength": "Weak",
+            "biased_evidence": true
+          },
+          "strongest_point": "The term 'hi' has multiple meanings and is widely recognized in various contexts."
+        },
+        "analyst": {
+          "agent": "Analyst",
+          "stance": "NEUTRAL",
+          "factual_accuracy_score": 100,
+          "main_analysis": "The claim 'hi' is too vague to be factually assessed. It can refer to a common greeting, a podcast title, a magazine, a song, or a film, as indicated by the provided Wikipedia entries. Without further context, it is impossible to determine the specific meaning or to assign a factual accuracy score.",
+          "evidence": [
+            {
+              "title": "HI",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "finding": "The term 'HI' or 'Hi' can refer to various entities, including the greeting 'hi', the podcast 'Hello Internet', or 'Hi (magazine)'."
+            },
+            {
+              "title": "Hi-de-Hi!",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Hi-de-Hi!",
+              "finding": "'Hi-de-Hi!' is the title of a BBC TV series and related media."
+            },
+            {
+              "title": "Hi, Hi, Hi",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Hi%2C_Hi%2C_Hi",
+              "finding": "'Hi, Hi, Hi' is a song by Wings, released in 1972."
+            },
+            {
+              "title": "Hi Nanna",
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Hi_Nanna",
+              "finding": "'Hi Nanna' is a 2023 Indian Telugu-language romantic drama film."
+            }
+          ],
+          "search_results": [
+            {
+              "title": "Wikipedia: HI",
+              "url": "https://en.wikipedia.org/wiki/HI",
+              "snippet": "Look up hi in Wiktionary, the free dictionary. HI or Hi may refer to: Hello Internet, a podcast hosted by CGP Grey and Brady Haran Hi (magazine), teen-lifestyle",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi-de-Hi!",
+              "url": "https://en.wikipedia.org/wiki/Hi-de-Hi!",
+              "snippet": "Hi -de- Hi ! Hi De Hi Based On The BBC TV Series, Paul Ableman, 1983 Hi -De- Hi Companion, Rob Cope and Mike Fury, 2009 Hi -de- Hi ! at BBC Online Hi -de- Hi !",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi, Hi, Hi",
+              "url": "https://en.wikipedia.org/wiki/Hi%2C_Hi%2C_Hi",
+              "snippet": "\" Hi , Hi , Hi \" is a song written by Paul and Linda McCartney and performed by Wings. It was released as a double A-side single with \"C Moon\" in 1972. The",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Wikipedia: Hi Nanna",
+              "url": "https://en.wikipedia.org/wiki/Hi_Nanna",
+              "snippet": "Hi Nanna (transl. Hi Father) is a 2023 Indian Telugu-language romantic drama film directed by Shouryuv, in his directoral debut, and produced by Vyra Entertainments",
+              "source": "Wikipedia"
+            },
+            {
+              "title": "Scientific Consensus - NASA Science",
+              "url": "https://science.nasa.gov/climate-change/scientific-consensus/",
+              "snippet": "This effort includes citing multiple peer-reviewed studies from research groups across the world, 1 illustrating the accuracy and consensus of research results (in this case, the scientific consensus on climate change) consistent with NASA&#x27;s scientific research portfolio.",
+              "source": "science.nasa.gov"
+            },
+            {
+              "title": "Google Scholar",
+              "url": "https://scholar.google.com/",
+              "snippet": "Google Scholar provides a simple way to broadly search for scholarly literature. Search across a wide variety of disciplines and sources: articles, theses, books, abstracts and court opinions.",
+              "source": "scholar.google.com"
+            },
+            {
+              "title": "The development of a consensus definition for healthcare improvement ...",
+              "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5329771/",
+              "snippet": "A high level of consensus was achieved for the broad definition in the 2nd Delphi iteration (86%). The final definition was agreed on by the consensus group: &#x27;Healthcare improvement science is the generation of knowledge to cultivate change and deliver person-centred care that is safe, effective, efficient, equitable and timely.",
+              "source": "pmc.ncbi.nlm.nih.gov"
+            },
+            {
+              "title": "Scientific consensus on climate change - Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Scientific_consensus_on_climate_change",
+              "snippet": "A 2019 review of scientific papers found the consensus on the cause of climate change to be at 100%, [6] and a 2021 study concluded that over 99% of scientific papers agree on the human cause of climate change. [7] The small percentage of papers that disagreed with the consensus often contained errors or could not be replicated. [8]",
+              "source": "en.wikipedia.org"
+            },
+            {
+              "title": "Data.gov Home - Data.gov",
+              "url": "https://data.gov/",
+              "snippet": "Here you will find data , tools, and resources to conduct research, develop web and mobile applications, design data visualizations, and more.",
+              "source": "data.gov"
+            },
+            {
+              "title": "AR6 Synthesis Report: Climate Change 2023 - IPCC",
+              "url": "https://www.ipcc.ch/report/ar6/syr/",
+              "snippet": "Intergovernmental Panel on Climate Change AR6 Synthesis Report Climate Change 2023",
+              "source": "ipcc.ch"
+            }
+          ],
+          "processed_evidence": [
+            {
+              "summary": "\"HI\" or \"Hi\" can refer to various things, including the greeting \"hi\", the podcast \"Hello Internet\", or \"Hi (magazine)\".",
+              "source": "https://en.wikipedia.org/wiki/HI",
+              "relevance": 1,
+              "stance": "neutral",
+              "credibility": 7
+            },
+            {
+              "summary": "\"Hi-de-Hi!\" is the title of a BBC TV series and related media.",
+              "source": "https://en.wikipedia.org/wiki/Hi-de-Hi!",
+              "relevance": 0.9,
+              "stance": "neutral",
+              "credibility": 7
+            },
+            {
+              "summary": "\"Hi, Hi, Hi\" is a song by Wings, released as a double A-side single in 1972.",
+              "source": "https://en.wikipedia.org/wiki/Hi%2C_Hi%2C_Hi",
+              "relevance": 0.9,
+              "stance": "neutral",
+              "credibility": 7
+            },
+            {
+              "summary": "\"Hi Nanna\" is a 2023 Indian Telugu-language romantic drama film.",
+              "source": "https://en.wikipedia.org/wiki/Hi_Nanna",
+              "relevance": 0.9,
+              "stance": "neutral",
+              "credibility": 7
+            }
+          ],
+          "evidence_summary": {
+            "support_count": 0,
+            "contradict_count": 0,
+            "neutral_count": 4,
+            "average_credibility": 7,
+            "overall_strength": "Moderate",
+            "biased_evidence": true
+          },
+          "verdict_hint": "The claim is too ambiguous to assess. It could be a greeting or refer to specific media. Further clarification is needed.",
+          "key_context": "The term 'hi' is a common English greeting. However, it also serves as an acronym or title for various entities, including podcasts, magazines, songs, and films, as detailed in the provided Wikipedia entries. The live web search results focus on the concept of 'scientific consensus' and data resources, which are unrelated to the ambiguous claim 'hi'."
+        }
+      },
+      "judgeResult": {
+        "verdict": "UNVERIFIED",
+        "confidence_score": 95,
+        "confidence_reasoning": "The claim 'hi' is extremely vague and lacks any specific context, making it impossible to assess its truthfulness. All agents, despite their differing stances, highlight the inherent ambiguity and the multitude of potential meanings for the term 'hi' (e.g., a greeting, a podcast, a magazine, a song, a film). Without further clarification, no factual determination can be made.",
+        "final_summary": "The claim 'hi' is too vague and lacks the necessary context to be fact-checked. It can refer to a common greeting or various specific entities such as a podcast, a magazine, a song, or a film. Due to this extreme ambiguity, it is impossible to determine its factual accuracy.",
+        "key_evidence": [
+          "The Wikipedia page for 'HI' serves as a disambiguation page, listing numerous distinct meanings for the term.",
+          "The Skeptic agent argues that the claim lacks substantial evidence and context, rendering it too vague for credible analysis.",
+          "The Analyst agent explicitly states that the claim is too vague to be factually assessed and provides multiple examples of what 'hi' could refer to."
+        ],
+        "agent_agreement": "MAJORITY",
+        "minority_view": "The Supporter agent, while taking a 'FOR' stance, also acknowledges that 'hi' has multiple meanings and is widely recognized, which implicitly supports the notion of its vagueness rather than asserting a singular truth.",
+        "verdict_color": "grey"
+      }
+    },
+    {
+      "claim": "hoi",
+      "verdict": "UNVERIFIED",
+      "confidence": 40,
+      "timestamp": "2026-05-05T20:21:15.777Z"
+    }
+  ],
+  "reviewQueue": [],
+  "credibility": [
+    {
+      "domain": "who.int",
+      "tier": 1
+    },
+    {
+      "domain": "nih.gov",
+      "tier": 1
+    },
+    {
+      "domain": "bbc.com",
+      "tier": 2
+    },
+    {
+      "domain": "reuters.com",
+      "tier": 2
+    },
+    {
+      "domain": "wikipedia.org",
+      "tier": 3
+    }
+  ]
+}

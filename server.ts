@@ -1,4 +1,5 @@
 import {GoogleGenAI} from '@google/genai';
+import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import OpenAI from 'openai';
@@ -36,10 +37,10 @@ const openrouter = new OpenAI({
 });
 
 const MODELS = {
-  SKEPTIC: 'llama-3.3-70b-versatile',
-  SUPPORTER: 'llama-3.1-8b-instant',
-  ANALYST: 'google/gemini-2.5-flash-lite',
-  JUDGE: 'gemini-2.5-flash',
+  SKEPTIC: 'llama-3.3-70b-versatile',    // Meta via Groq
+  SUPPORTER: 'llama-3.1-8b-instant',      // Meta via Groq (fast)
+  ANALYST: 'llama-3.3-70b-versatile',     // Meta via Groq
+  JUDGE: 'llama-3.3-70b-versatile',       // Meta via Groq (no Gemini quota issues)
 } as const;
 
 const SKEPTIC_PROMPT = `You are Agent A: The Skeptic (powered by Meta Llama 3.3). Your role is to CHALLENGE the claim.
@@ -347,7 +348,7 @@ async function processEvidence(claim: string, rawEvidence: SearchResult[]) {
   });
 
   const processed = normalizeEvidenceProcessingResult(
-    await callGemini(MODELS.JUDGE, EVIDENCE_PROCESSOR_PROMPT, prompt, false),
+    await callOpenAICompatible(groq, MODELS.JUDGE, EVIDENCE_PROCESSOR_PROMPT, prompt),
   );
 
   return processed.processed_evidence.length > 0
@@ -475,7 +476,8 @@ Claim: "${claim}"
 Agent results: ${JSON.stringify(agents)}
   `;
 
-  return normalizeJudgeResult(await callGemini(MODELS.JUDGE, JUDGE_PROMPT, prompt, false));
+  requireApiKey(groqKey, 'GROQ_API_KEY');
+  return normalizeJudgeResult(await callOpenAICompatible(groq, MODELS.JUDGE, JUDGE_PROMPT, prompt));
 }
 
 function getErrorMessage(error: unknown) {
@@ -483,6 +485,7 @@ function getErrorMessage(error: unknown) {
 }
 
 const app = express();
+app.use(cors());
 app.use(express.json({limit: '1mb'}));
 
 app.post('/api/agent', async (req, res) => {
@@ -515,6 +518,54 @@ app.post('/api/judge', async (req, res) => {
     res.json(await callJudge(claim.trim(), agents));
   } catch (error) {
     console.error('Judge request failed:', error);
+    res.status(500).json({error: getErrorMessage(error)});
+  }
+});
+
+app.post('/api/verify', async (req, res) => {
+  try {
+    const {claim} = req.body as {claim?: string};
+    if (!claim?.trim()) {
+      res.status(400).json({error: 'Claim is required.'});
+      return;
+    }
+
+    const currentClaim = claim.trim();
+
+    // Run all 3 agents in parallel
+    const [skepticRaw, supporterRaw, analystRaw] = await Promise.all([
+      callAgent('SKEPTIC', currentClaim).catch((e) => ({ agent: 'Skeptic', stance: 'FAILED', error: e.message })),
+      callAgent('SUPPORTER', currentClaim).catch((e) => ({ agent: 'Supporter', stance: 'FAILED', error: e.message })),
+      callAgent('ANALYST', currentClaim).catch((e) => ({ agent: 'Analyst', stance: 'FAILED', error: e.message })),
+    ]);
+
+    const validAgents = [skepticRaw, supporterRaw, analystRaw].filter((r): r is AgentResult => 
+      r !== null && !('error' in r) && r.stance !== 'FAILED'
+    );
+
+    if (validAgents.length < 1) {
+      res.status(500).json({error: 'All agents failed to produce results.'});
+      return;
+    }
+
+    const judgeResult = await callJudge(currentClaim, validAgents);
+
+    // Map to extension format
+    // Verdict mapping: TRUE -> True, FALSE -> False, MISLEADING/UNVERIFIED -> Partially True
+    let verdict: 'True' | 'False' | 'Partially True' | 'Insufficient Evidence' = 'Partially True';
+    if (judgeResult.verdict === 'TRUE') verdict = 'True';
+    else if (judgeResult.verdict === 'FALSE') verdict = 'False';
+    else if (judgeResult.verdict === 'UNVERIFIED') verdict = 'Insufficient Evidence';
+
+    res.json({
+      verdict,
+      confidence: judgeResult.confidence_score / 100,
+      short_reason: judgeResult.final_summary,
+      key_points: judgeResult.key_evidence || []
+    });
+
+  } catch (error) {
+    console.error('Verify request failed:', error);
     res.status(500).json({error: getErrorMessage(error)});
   }
 });
