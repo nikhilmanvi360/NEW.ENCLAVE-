@@ -15,6 +15,15 @@ View your app in AI Studio: https://ai.studio/apps/f6f06f25-b842-4917-8084-c077b
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy [.env.example](.env.example) to `.env.local` and set `GEMINI_API_KEY`, `GROQ_API_KEY`, and `OPENROUTER_API_KEY`
 3. Run the app:
    `npm run dev`
+
+The local dev server runs both the React app and the `/api/*` AI proxy so provider keys stay on the server.
+
+Run checks with:
+`npm run lint`
+`npm test`
+`npm run build`
+
+Completed verdicts are saved locally in the browser so recent claims can be restored from the history panel.

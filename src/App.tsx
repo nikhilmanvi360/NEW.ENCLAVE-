@@ -4,17 +4,35 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, ShieldAlert, CheckCircle, BrainCircuit, Scale, Loader2, AlertCircle, RefreshCw, Download } from 'lucide-react';
+import { Search, ShieldAlert, CheckCircle, BrainCircuit, Scale, Loader2, AlertCircle, RefreshCw, Download, ExternalLink, Clock, Trash2, Globe2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { callAgent, callJudge, SKEPTIC_PROMPT, SUPPORTER_PROMPT, ANALYST_PROMPT } from './services/ai';
+import { callAgent, callJudge, type AgentResult, type Evidence, type JudgeResult, type ProcessedEvidence, type SearchResult } from './services/ai';
 import html2canvas from 'html2canvas';
 
 type UIState = 'idle' | 'analyzing' | 'agents_done' | 'judging' | 'verdict_ready';
+type PageView = 'verify' | 'history';
 
 type AgentProgress = 'pending' | 'loading' | 'done' | 'error';
+type AgentKey = 'skeptic' | 'supporter' | 'analyst';
+type AgentResults = Record<AgentKey, AgentResult>;
+type HistoryEntry = {
+  id: string;
+  claim: string;
+  createdAt: string;
+  agentResults: AgentResults;
+  judgeResult: JudgeResult;
+};
+
+const historyStorageKey = 'truth-engine-history-v1';
+const agentOrder: Array<{key: AgentKey; role: 'SKEPTIC' | 'SUPPORTER' | 'ANALYST'}> = [
+  {key: 'skeptic', role: 'SKEPTIC'},
+  {key: 'supporter', role: 'SUPPORTER'},
+  {key: 'analyst', role: 'ANALYST'},
+];
 
 export default function App() {
   const [claim, setClaim] = useState('');
+  const [pageView, setPageView] = useState<PageView>('verify');
   const [uiState, setUiState] = useState<UIState>('idle');
   const [agentProgress, setAgentProgress] = useState<{
     skeptic: AgentProgress;
@@ -28,16 +46,29 @@ export default function App() {
     judge: 'pending'
   });
 
-  const [agentResults, setAgentResults] = useState<{
-    skeptic: any;
-    supporter: any;
-    analyst: any;
-  } | null>(null);
+  const [agentResults, setAgentResults] = useState<AgentResults | null>(null);
 
-  const [judgeResult, setJudgeResult] = useState<any>(null);
+  const [judgeResult, setJudgeResult] = useState<JudgeResult | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [timelineStep, setTimelineStep] = useState(0);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const reportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(historyStorageKey);
+      if (saved) {
+        setHistory(JSON.parse(saved));
+      }
+    } catch (err) {
+      console.error('Failed to load history', err);
+    }
+  }, []);
+
+  const persistHistory = (nextHistory: HistoryEntry[]) => {
+    setHistory(nextHistory);
+    window.localStorage.setItem(historyStorageKey, JSON.stringify(nextHistory));
+  };
 
   const downloadReport = async () => {
     if (!reportRef.current) return;
@@ -55,6 +86,7 @@ export default function App() {
   const handleAnalyze = async () => {
     if (!claim.trim()) return;
 
+    const currentClaim = claim.trim();
     setUiState('analyzing');
     setAgentProgress({ skeptic: 'loading', supporter: 'loading', analyst: 'loading', judge: 'pending' });
     setAgentResults(null);
@@ -62,23 +94,32 @@ export default function App() {
     setErrorMsg('');
 
     try {
-      const [skepticProm, supporterProm, analystProm] = [
-        callAgent(SKEPTIC_PROMPT, claim),
-        callAgent(SUPPORTER_PROMPT, claim),
-        callAgent(ANALYST_PROMPT, claim)
-      ];
+      const agentPromises = agentOrder.map(({key, role}) => (
+        callAgent(role, currentClaim)
+          .then((result) => {
+            setAgentProgress(prev => ({ ...prev, [key]: 'done' }));
+            return result;
+          })
+          .catch((err) => {
+            setAgentProgress(prev => ({ ...prev, [key]: 'error' }));
+            return createFailedAgentResult(role, err instanceof Error ? err.message : 'Agent request failed.');
+          })
+      ));
 
-      skepticProm.then(res => setAgentProgress(prev => ({ ...prev, skeptic: 'done' }))).catch(() => setAgentProgress(prev => ({ ...prev, skeptic: 'error' })));
-      supporterProm.then(res => setAgentProgress(prev => ({ ...prev, supporter: 'done' }))).catch(() => setAgentProgress(prev => ({ ...prev, supporter: 'error' })));
-      analystProm.then(res => setAgentProgress(prev => ({ ...prev, analyst: 'done' }))).catch(() => setAgentProgress(prev => ({ ...prev, analyst: 'error' })));
+      const [skepticRes, supporterRes, analystRes] = await Promise.all(agentPromises);
+      const successfulAgents = [skepticRes, supporterRes, analystRes].filter(result => !result.error);
 
-      const [skepticRes, supporterRes, analystRes] = await Promise.all([skepticProm, supporterProm, analystProm]);
+      if (successfulAgents.length < 2) {
+        throw new Error('At least two agents must complete before the judge can produce a verdict.');
+      }
       
-      setAgentResults({
+      const settledAgentResults = {
         skeptic: skepticRes,
         supporter: supporterRes,
         analyst: analystRes,
-      });
+      };
+
+      setAgentResults(settledAgentResults);
 
       setUiState('agents_done');
       
@@ -93,15 +134,25 @@ export default function App() {
       setUiState('judging');
       setAgentProgress(prev => ({ ...prev, judge: 'loading' }));
 
-      const judgeRes = await callJudge(claim, skepticRes, supporterRes, analystRes);
+      const judgeRes = await callJudge(currentClaim, successfulAgents);
       
       setJudgeResult(judgeRes);
       setAgentProgress(prev => ({ ...prev, judge: 'done' }));
       setUiState('verdict_ready');
+      persistHistory([
+        {
+          id: `${Date.now()}`,
+          claim: currentClaim,
+          createdAt: new Date().toISOString(),
+          agentResults: settledAgentResults,
+          judgeResult: judgeRes,
+        },
+        ...history.filter((item) => item.claim !== currentClaim),
+      ].slice(0, 8));
 
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setErrorMsg("An error occurred during analysis. Please try again.");
+      setErrorMsg(err instanceof Error ? err.message : "An error occurred during analysis. Please try again.");
       setUiState('idle');
     }
   };
@@ -113,6 +164,21 @@ export default function App() {
     setJudgeResult(null);
     setTimelineStep(0);
     setAgentProgress({ skeptic: 'pending', supporter: 'pending', analyst: 'pending', judge: 'pending' });
+  };
+
+  const restoreHistory = (entry: HistoryEntry) => {
+    setPageView('verify');
+    setClaim(entry.claim);
+    setAgentResults(entry.agentResults);
+    setJudgeResult(entry.judgeResult);
+    setTimelineStep(3);
+    setUiState('verdict_ready');
+    setErrorMsg('');
+    setAgentProgress({ skeptic: 'done', supporter: 'done', analyst: 'done', judge: 'done' });
+  };
+
+  const clearHistory = () => {
+    persistHistory([]);
   };
 
   const getVerdictBgColor = (color: string) => {
@@ -141,13 +207,34 @@ export default function App() {
             <BrainCircuit className="w-7 h-7 text-indigo-600" />
             <h1 className="font-bold text-xl tracking-tight">Multi-Agent Truth Engine</h1>
           </div>
-          <div className="text-sm font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
-            Powered by Gemini
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPageView('verify')}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${pageView === 'verify' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              Verify
+            </button>
+            <button
+              onClick={() => setPageView('history')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${pageView === 'history' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Clock className="w-4 h-4" />
+              History
+              {history.length > 0 && (
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pageView === 'history' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  {history.length}
+                </span>
+              )}
+            </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-12">
+        {pageView === 'history' ? (
+          <HistoryPage history={history} onRestore={restoreHistory} onClear={clearHistory} />
+        ) : (
+        <>
         {/* Intro & Input Layer */}
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
@@ -210,7 +297,7 @@ export default function App() {
                 {/* Agent A: Skeptic */}
                 <AgentCard 
                   title="The Skeptic" 
-                  role="Agent A"
+                  role="Agent A (Meta Llama 3.3)"
                   icon={<ShieldAlert className="w-6 h-6 text-rose-500" />}
                   colorClass="border-rose-200 bg-rose-50/50"
                   headerColor="text-rose-700"
@@ -221,7 +308,7 @@ export default function App() {
                 {/* Agent C: Analyst */}
                 <AgentCard 
                   title="The Analyst" 
-                  role="Agent C"
+                  role="Agent C (Google via OpenRouter)"
                   icon={<Search className="w-6 h-6 text-blue-500" />}
                   colorClass="border-blue-200 bg-blue-50/50"
                   headerColor="text-blue-700"
@@ -232,13 +319,32 @@ export default function App() {
                 {/* Agent B: Supporter */}
                 <AgentCard 
                   title="The Supporter" 
-                  role="Agent B"
+                  role="Agent B (Meta Llama 3.1)"
                   icon={<CheckCircle className="w-6 h-6 text-emerald-500" />}
                   colorClass="border-emerald-200 bg-emerald-50/50"
                   headerColor="text-emerald-700"
                   progress={agentProgress.supporter}
                   thinkingMessages={["Searching supporting context...", "Finding validating sources...", "Strengthening arguments..."]}
                 />
+              </div>
+              
+              {/* Ticker Tape */}
+              <div className="w-full max-w-4xl mx-auto mt-8 overflow-hidden bg-white rounded-xl border border-slate-200 py-3 shadow-sm relative">
+                <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-white to-transparent z-10 pointer-events-none"></div>
+                <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-white to-transparent z-10 pointer-events-none"></div>
+                <motion.div 
+                  animate={{ x: [600, -1000] }}
+                  transition={{ repeat: Infinity, duration: 20, ease: "linear" }}
+                  className="whitespace-nowrap flex gap-12 text-xs font-mono font-medium text-slate-500"
+                >
+                  <span className="text-rose-600">[SKEPTIC] Interrogating logical fallacies...</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-emerald-600">[SUPPORTER] Cross-referencing credible sources...</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-blue-600">[ANALYST] Fact-checking statistical data...</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-slate-700">[SYSTEM] Connecting to Live Search nodes...</span>
+                </motion.div>
               </div>
             </motion.div>
           )}
@@ -330,13 +436,14 @@ export default function App() {
                     <div>
                       {/* Report Card content start */}
                       <div ref={reportRef} className="bg-white">
-                        <div className={`px-10 py-12 text-white ${getVerdictBgColor(judgeResult.verdict_color)} flex flex-col items-center justify-center text-center`}>
-                          <Scale className="w-14 h-14 mb-4 opacity-90" />
-                          <h3 className="text-sm font-bold uppercase tracking-widest opacity-80 mb-2">Final Verdict</h3>
-                          <div className="text-6xl font-black mb-4 tracking-tight drop-shadow-sm">
+                        <div className={`px-10 py-12 text-white ${getVerdictBgColor(judgeResult.verdict_color)} flex flex-col items-center justify-center text-center relative overflow-hidden`}>
+                          <div className="absolute inset-0 bg-white/10 opacity-50 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.2)_0%,transparent_100%)]"></div>
+                          <Scale className="w-14 h-14 mb-4 opacity-90 relative z-10" />
+                          <h3 className="text-sm font-bold uppercase tracking-widest opacity-80 mb-2 relative z-10">Final Verdict</h3>
+                          <div className="text-6xl font-black mb-4 tracking-tight drop-shadow-sm animate-stamp relative z-10 shadow-[0_0_40px_rgba(255,255,255,0.3)]">
                             {judgeResult.verdict}
                           </div>
-                          <p className="text-xl font-medium max-w-2xl opacity-90 text-balance leading-relaxed">
+                          <p className="text-xl font-medium max-w-2xl opacity-90 text-balance leading-relaxed relative z-10">
                             {judgeResult.final_summary}
                           </p>
                         </div>
@@ -420,6 +527,8 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        </>
+        )}
       </main>
     </div>
   );
@@ -503,6 +612,10 @@ function AgentCard({
 
 function getTrustBadge(url: string) {
   const lower = url.toLowerCase();
+
+  if (lower.includes('wikipedia.org') || lower === 'wikipedia') {
+    return { label: 'Wikipedia', color: 'bg-violet-100 text-violet-800 border-violet-200' };
+  }
   
   if (lower.includes('.gov') || lower.includes('.edu') || lower.includes('who.int') || lower.includes('cdc.gov') || lower.includes('nih.gov')) {
     return { label: 'High Trust', color: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
@@ -519,7 +632,92 @@ function getTrustBadge(url: string) {
   return { label: 'Standard', color: 'bg-slate-100 text-slate-700 border-slate-200' };
 }
 
-function TimelineMessage({ role, title, icon, colorClass, result, delay }: { role: string; title: string; icon: React.ReactNode; colorClass: string; result: any, delay: number, key?: string }) {
+function createFailedAgentResult(role: 'SKEPTIC' | 'SUPPORTER' | 'ANALYST', error: string): AgentResult {
+  const defaults = {
+    SKEPTIC: {agent: 'Skeptic', stance: 'FAILED', main_argument: 'The Skeptic could not complete this run.'},
+    SUPPORTER: {agent: 'Supporter', stance: 'FAILED', main_argument: 'The Supporter could not complete this run.'},
+    ANALYST: {agent: 'Analyst', stance: 'FAILED', main_analysis: 'The Analyst could not complete this run.'},
+  } as const;
+
+  return {
+    ...defaults[role],
+    evidence: [],
+    search_results: [],
+    error,
+    key_context: 'The judge will continue with the completed agent results.',
+  };
+}
+
+function HistoryPage({ history, onRestore, onClear }: { history: HistoryEntry[]; onRestore: (entry: HistoryEntry) => void; onClear: () => void }) {
+  return (
+    <section>
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-8">
+        <div>
+          <div className="flex items-center gap-2 text-indigo-600 mb-3">
+            <Clock className="w-5 h-5" />
+            <span className="text-sm font-bold uppercase tracking-wider">Saved Verdicts</span>
+          </div>
+          <h2 className="text-3xl font-extrabold tracking-tight text-slate-800">Claim History</h2>
+          <p className="text-slate-500 mt-2 max-w-2xl">
+            Review previous runs, restore a completed verdict, or clear locally stored results.
+          </p>
+        </div>
+        {history.length > 0 && (
+          <button
+            onClick={onClear}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-rose-200 text-rose-600 bg-white hover:bg-rose-50 transition-colors font-medium"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear History
+          </button>
+        )}
+      </div>
+
+      {history.length === 0 ? (
+        <div className="border border-dashed border-slate-300 bg-white/70 p-12 text-center">
+          <Clock className="w-10 h-10 text-slate-300 mx-auto mb-4" />
+          <h3 className="font-bold text-slate-700 mb-2">No saved verdicts yet</h3>
+          <p className="text-sm text-slate-500">Completed analyses will be stored here automatically.</p>
+        </div>
+      ) : (
+        <div className="overflow-hidden border border-slate-200 bg-white shadow-sm">
+          <div className="grid grid-cols-[1fr_120px_120px_150px] gap-4 px-5 py-3 bg-slate-100 text-xs font-bold uppercase tracking-wider text-slate-500">
+            <span>Claim</span>
+            <span>Verdict</span>
+            <span>Confidence</span>
+            <span>Saved</span>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {history.map((entry) => (
+              <button
+                key={entry.id}
+                onClick={() => onRestore(entry)}
+                className="w-full grid grid-cols-1 md:grid-cols-[1fr_120px_120px_150px] gap-3 md:gap-4 px-5 py-4 text-left hover:bg-indigo-50/50 transition-colors"
+              >
+                <div className="min-w-0">
+                  <div className="font-semibold text-slate-800 truncate">{entry.claim}</div>
+                  <div className="text-sm text-slate-500 mt-1 line-clamp-2">{entry.judgeResult.final_summary}</div>
+                </div>
+                <div>
+                  <span className={`inline-flex text-xs font-bold px-2.5 py-1 rounded-full ${entry.judgeResult.verdict_color === 'green' ? 'bg-emerald-100 text-emerald-700' : entry.judgeResult.verdict_color === 'red' ? 'bg-rose-100 text-rose-700' : entry.judgeResult.verdict_color === 'yellow' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                    {entry.judgeResult.verdict}
+                  </span>
+                </div>
+                <div className="text-sm font-bold text-slate-700">{entry.judgeResult.confidence_score}%</div>
+                <div className="text-sm text-slate-500">
+                  {new Date(entry.createdAt).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TimelineMessage({ role, title, icon, colorClass, result, delay }: { role: string; title: string; icon: React.ReactNode; colorClass: string; result: AgentResult, delay: number, key?: string }) {
+  const isFailed = Boolean(result.error);
   return (
     <motion.div 
       initial={{ opacity: 0, x: -20, scale: 0.95 }}
@@ -532,39 +730,78 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
           {icon}
         </div>
       </div>
-      <div className={`flex-1 rounded-2xl rounded-tl-none p-5 border shadow-sm ${colorClass} bg-white transition-all`}>
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-xs font-bold uppercase tracking-wider opacity-70">{role}</span>
-          <span className="w-1 h-1 rounded-full bg-current opacity-30"></span>
-          <span className="text-sm font-bold opacity-90">{title}</span>
+      <div className={`flex-1 rounded-2xl rounded-tl-none p-5 border shadow-sm relative overflow-hidden ${isFailed ? 'bg-rose-50 border-rose-200 text-rose-800' : colorClass} transition-all`}>
+        {/* Dossier Watermark */}
+        <div className="absolute -right-4 -bottom-6 text-[5rem] font-black uppercase text-slate-900/[0.03] select-none pointer-events-none transform -rotate-12 z-0">
+          CLASSIFIED
         </div>
         
-        <p className="text-slate-800 leading-relaxed font-medium mb-4">
-          {result.main_argument || result.main_analysis}
-        </p>
-        
-        {result.evidence && result.evidence.length > 0 && (
-          <div className="space-y-2 mt-4">
-            <span className="text-xs font-bold uppercase tracking-wider opacity-70 block mb-2">Supporting Evidence</span>
-            {result.evidence.slice(0, 2).map((ev: any, i: number) => {
-              const badge = getTrustBadge(ev.source);
-              return (
-                <div key={i} className="bg-white/60 p-3 rounded-xl border border-current/10 shadow-sm">
-                  <p className="text-sm text-slate-700 mb-2 leading-snug">"{ev.finding}"</p>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.color}`}>
-                      {badge.label}
-                    </span>
-                    <span className="text-xs font-medium opacity-70 truncate">{ev.source}</span>
-                  </div>
-                </div>
-              );
-            })}
+        <div className="relative z-10">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-bold uppercase tracking-wider opacity-70">{role}</span>
+            <span className="w-1 h-1 rounded-full bg-current opacity-30"></span>
+            <span className="text-sm font-bold opacity-90">{title}</span>
+            <span className="ml-auto text-[10px] font-mono text-slate-400">ID:{Math.random().toString(36).substring(7).toUpperCase()}</span>
           </div>
+          
+          <p className="text-slate-800 leading-relaxed font-medium mb-4 text-[15px]">
+            {result.error ? `Skipped: ${result.error}` : result.main_argument || result.main_analysis}
+          </p>
+          
+          {result.evidence && result.evidence.length > 0 && (
+            <div className="space-y-2 mt-4 pt-4 border-t border-current/10">
+              <span className="text-xs font-bold uppercase tracking-wider opacity-70 block mb-2">Supporting Evidence File</span>
+              {result.evidence.slice(0, 2).map((ev: Evidence, i: number) => {
+                const badge = getTrustBadge(ev.url || ev.source);
+                let domain = '';
+                try {
+                  domain = ev.url ? new URL(ev.url).hostname : '';
+                } catch(e) {}
+
+                return (
+                  <div key={i} className="bg-white/70 backdrop-blur-sm p-3 rounded-xl border border-current/10 shadow-sm hover:bg-white transition-colors">
+                    <p className="text-sm text-slate-800 font-medium mb-2 leading-snug">"{ev.finding}"</p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.color}`}>
+                        {badge.label}
+                      </span>
+                      {domain && (
+                        <img src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`} className="w-4 h-4 rounded-full opacity-80" alt="" />
+                      )}
+                      {ev.url ? (
+                        <a
+                          href={ev.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 truncate hover:text-indigo-600 hover:underline"
+                        >
+                          <span className="truncate">{ev.title || ev.source || domain}</span>
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                        </a>
+                      ) : (
+                        <span className="text-xs font-medium text-slate-500 truncate flex-1">{ev.title || ev.source}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {result.search_results && result.search_results.length > 0 && (
+          <SearchTrail results={result.search_results} />
+        )}
+
+        {result.processed_evidence && result.processed_evidence.length > 0 && (
+          <ProcessedEvidencePanel
+            evidence={result.processed_evidence}
+            summary={result.evidence_summary}
+          />
         )}
         
         {(result.weakness_of_claim || result.strongest_point || result.key_context) && (
-          <div className="mt-4 pt-3 border-t border-current/10">
+          <div className="relative z-10 mt-4 pt-3 border-t border-current/10">
              <span className="text-xs font-bold uppercase tracking-wider opacity-70 block mb-1">Key Insight</span>
              <p className="text-sm italic opacity-90">
                {result.weakness_of_claim || result.strongest_point || result.key_context}
@@ -576,3 +813,81 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
   );
 }
 
+function ProcessedEvidencePanel({ evidence, summary }: { evidence: ProcessedEvidence[]; summary: AgentResult['evidence_summary'] }) {
+  return (
+    <div className="mt-4 pt-3 border-t border-current/10">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <span className="text-xs font-bold uppercase tracking-wider opacity-70">Processed Evidence</span>
+        {summary && (
+          <div className="flex flex-wrap gap-2 text-[10px] font-bold">
+            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">{summary.support_count} support</span>
+            <span className="px-2 py-1 rounded-full bg-rose-100 text-rose-700">{summary.contradict_count} contradict</span>
+            <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-600">{summary.neutral_count} neutral</span>
+            <span className="px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">{summary.overall_strength}</span>
+            {summary.biased_evidence && (
+              <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700">biased</span>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="space-y-2">
+        {evidence.slice(0, 5).map((item, index) => (
+          <div key={`${item.source}-${index}`} className="rounded-xl border border-current/10 bg-white/60 p-3">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${item.stance === 'supports' ? 'bg-emerald-100 text-emerald-700' : item.stance === 'contradicts' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                {item.stance}
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                rel {item.relevance.toFixed(2)}
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">
+                cred {item.credibility}/10
+              </span>
+              <span className="text-xs opacity-60 truncate">{item.source}</span>
+            </div>
+            <p className="text-sm text-slate-700 leading-snug">{item.summary}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SearchTrail({ results }: { results: SearchResult[] }) {
+  return (
+    <div className="mt-4 pt-3 border-t border-current/10">
+      <div className="flex items-center gap-2 mb-2">
+        <Globe2 className="w-4 h-4 opacity-70" />
+        <span className="text-xs font-bold uppercase tracking-wider opacity-70">Live Search Sources</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {results.slice(0, 4).map((result, index) => {
+          const badge = getTrustBadge(result.url || result.source || result.title);
+          return (
+            <a
+              key={`${result.url || result.title}-${index}`}
+              href={result.url || '#'}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 rounded-xl border border-current/10 bg-white/60 p-3 hover:bg-white transition-colors"
+            >
+              <div className="flex items-center gap-2 mb-1 min-w-0">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.color}`}>
+                  {badge.label}
+                </span>
+                <span className="text-xs opacity-60 truncate">{result.source}</span>
+              </div>
+              <div className="flex items-start gap-2 text-sm font-semibold text-slate-800">
+                <span className="line-clamp-2">{result.title || result.url}</span>
+                <ExternalLink className="w-3.5 h-3.5 shrink-0 mt-0.5 opacity-50" />
+              </div>
+              {result.snippet && (
+                <p className="text-xs text-slate-500 mt-1 line-clamp-2">{result.snippet}</p>
+              )}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
