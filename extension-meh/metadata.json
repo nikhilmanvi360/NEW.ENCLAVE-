@@ -1,0 +1,6 @@
+{
+  "name": "Fact Check AI Extension",
+  "description": "A Chrome extension UI that uses Gemini to fact-check claims in real-time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
