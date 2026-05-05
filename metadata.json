@@ -1,0 +1,6 @@
+{
+  "name": "Multi-Agent Truth Engine",
+  "description": "A fact-checking system where multiple specialized AI agents debate claims using live web search before a central Judge delivers a verdict.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
