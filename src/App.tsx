@@ -4,15 +4,17 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, ShieldAlert, CheckCircle, BrainCircuit, Scale, Loader2, AlertCircle, RefreshCw, Download, ExternalLink, Clock, Trash2, Globe2, Sparkles, ArrowRight, UploadCloud, FileVideo, Shield, Settings, Server, Key, Lock, Unlock, Users, Activity, Terminal, Zap, BarChart3, CreditCard, Wallet, Diamond, LogOut, Mail, Eye, EyeOff, Route, Database, ToggleLeft, ToggleRight, Play } from 'lucide-react';
+import { Search, ShieldAlert, CheckCircle, BrainCircuit, Scale, Loader2, AlertCircle, RefreshCw, Download, ExternalLink, Clock, Trash2, Globe2, Sparkles, ArrowRight, UploadCloud, FileVideo, Shield, Settings, Server, Key, Lock, Unlock, Users, Activity, Terminal, Zap, BarChart3, CreditCard, Wallet, Diamond, LogOut, Mail, Eye, EyeOff, Route, Database, ToggleLeft, ToggleRight, Play, Twitter, Github, Instagram, Link2, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { callAgent, callJudge, type AgentResult, type Evidence, type JudgeResult, type ProcessedEvidence, type SearchResult } from './services/ai';
+import { callAgent, callJudge, checkCache, type AgentResult, type Evidence, type JudgeResult, type ProcessedEvidence, type SearchResult } from './services/ai';
 import html2canvas from 'html2canvas';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { LandingPage } from './LandingPage';
 import { supabase } from './lib/supabase';
+import CitationGraph from './components/CitationGraph';
 
 type UIState = 'idle' | 'analyzing' | 'agents_done' | 'judging' | 'verdict_ready';
-type PageView = 'verify' | 'history' | 'analytics' | 'review' | 'batch' | 'webhooks' | 'admin' | 'pricing';
+type PageView = 'verify' | 'history' | 'analytics' | 'review' | 'batch' | 'webhooks' | 'admin' | 'pricing' | 'radar';
 
 type AgentProgress = 'pending' | 'loading' | 'done' | 'error';
 type AgentKey = 'skeptic' | 'supporter' | 'analyst';
@@ -438,14 +440,26 @@ export default function App() {
   const downloadReport = async () => {
     if (!reportRef.current) return;
     try {
-      const canvas = await html2canvas(reportRef.current, { scale: 2, useCORS: true });
+      const canvas = await html2canvas(reportRef.current, { 
+        scale: 2, 
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
       const link = document.createElement('a');
-      link.download = `verdict-report-${Date.now()}.png`;
+      link.download = `lumina-report-${Date.now()}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     } catch (err) {
       console.error('Failed to snapshot report', err);
     }
+  };
+
+  const copyShareLink = () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?claim=${encodeURIComponent(claim)}&domain=${domain}`;
+    navigator.clipboard.writeText(shareUrl);
+    // Simple alert or toast could be added here
+    alert('Share link copied to clipboard!');
   };
 
   const handleAnalyze = async () => {
@@ -461,9 +475,24 @@ export default function App() {
     setJudgeResult(null);
     setErrorMsg('');
 
+    // 1. Check Cache First
+    try {
+      const cache = await checkCache(originalClaim, domain);
+      if (cache.cached) {
+        setAgentResults(cache.agent_results);
+        setJudgeResult(cache.result);
+        setAgentProgress({ skeptic: 'done', supporter: 'done', analyst: 'done', judge: 'done' });
+        setTimelineStep(3);
+        setUiState('verdict_ready');
+        return;
+      }
+    } catch (err) {
+      console.warn('Cache check failed, proceeding with live analysis', err);
+    }
+
     try {
       const agentPromises = agentOrder.map(({key, role}) => (
-        callAgent(role, enrichedClaim)
+        callAgent(role, enrichedClaim, user?.id)
           .then((result) => {
             setAgentProgress(prev => ({ ...prev, [key]: 'done' }));
             return result;
@@ -502,7 +531,7 @@ export default function App() {
       setUiState('judging');
       setAgentProgress(prev => ({ ...prev, judge: 'loading' }));
 
-      const judgeRes = await callJudge(enrichedClaim, successfulAgents);
+      const judgeRes = await callJudge(enrichedClaim, successfulAgents, user?.id);
       
       setJudgeResult(judgeRes);
       setAgentProgress(prev => ({ ...prev, judge: 'done' }));
@@ -628,6 +657,19 @@ export default function App() {
               </button>
             ))}
           </nav>
+          {/* Radar PRO nav item */}
+          <button
+            onClick={() => setPageView('radar')}
+            className={`hidden lg:flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold transition-all ml-1 ${
+              pageView === 'radar'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
+                : 'bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-600 border border-indigo-200 hover:border-indigo-400'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            Radar
+            <span className="text-[8px] font-black px-1.5 py-0.5 bg-indigo-600 text-white rounded-full leading-none">PRO</span>
+          </button>
 
           {/* ZONE 3: ACCOUNT */}
           <div className="flex items-center gap-3">
@@ -685,7 +727,7 @@ export default function App() {
         ) : (['analytics', 'review', 'batch', 'webhooks'].includes(pageView) && !isSubscribed) || pageView === 'pricing' ? (
           <PricingPage onUpgrade={(planId) => { setSelectedPlanId(planId); setShowCheckout(true); }} />
         ) : pageView === 'analytics' ? (
-          <AnalyticsMockPage />
+          <UsageDashboard user={user} history={history} />
         ) : pageView === 'review' ? (
           <ReviewQueueMockPage />
         ) : pageView === 'batch' ? (
@@ -694,6 +736,8 @@ export default function App() {
           <WebhooksPage isSubscribed={isSubscribed} onUpgrade={() => {}} />
         ) : pageView === 'admin' ? (
           user ? <AdminMockPage user={user} onSignOut={async () => { await supabase?.auth.signOut(); setUser(null); }} /> : <AdminLoginPage onLogin={setUser} loading={authLoading} setLoading={setAuthLoading} />
+        ) : pageView === 'radar' ? (
+          <RadarPage isSubscribed={isSubscribed} onUpgrade={() => setPageView('pricing')} />
         ) : (
         <>
         {/* Intro & Input Layer */}
@@ -1081,6 +1125,17 @@ export default function App() {
                           <div className="absolute inset-0 bg-black/10 mix-blend-overlay"></div>
                           <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
                           
+                          {judgeResult.cached && (
+                            <motion.div 
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              className="absolute top-8 right-8 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/30 flex items-center gap-2 shadow-lg z-20"
+                            >
+                              <Zap className="w-3.5 h-3.5 text-yellow-300 fill-yellow-300" />
+                              <span className="text-[10px] font-black uppercase tracking-wider text-white">Instant Result</span>
+                            </motion.div>
+                          )}
+                          
                           <motion.div 
                             initial={{ scale: 1.5, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
@@ -1194,17 +1249,31 @@ export default function App() {
                            </ul>
                         </div>
                       </div>
+
+                      {/* Phase 2: Citation Network Visualization */}
+                      <div className="px-10 pb-12">
+                        <CitationGraph claim={claim} agentResults={agentResults} />
+                      </div>
                       </div>
                       {/* Report Card content end */}
 
-                      <div className="bg-slate-50 p-6 sm:px-10 border-t border-slate-200 flex flex-col sm:flex-row gap-4 items-center justify-between">
-                        <button 
-                          onClick={downloadReport}
-                          className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-white border border-slate-200 text-slate-700 font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-2xl shadow-sm hover:shadow active:scale-95"
-                        >
-                          <Download className="w-5 h-5" />
-                          Export PDF
-                        </button>
+                      <div className="bg-slate-50 p-6 sm:px-10 border-t border-slate-200 flex flex-wrap gap-4 items-center justify-between">
+                        <div className="flex flex-wrap gap-3">
+                          <button 
+                            onClick={downloadReport}
+                            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
+                          >
+                            <Download className="w-4 h-4" />
+                            Download Card
+                          </button>
+                          <button 
+                            onClick={copyShareLink}
+                            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
+                          >
+                            <Link2 className="w-4 h-4 text-indigo-500" />
+                            Share Link
+                          </button>
+                        </div>
                         <button 
                           onClick={resetState}
                           className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-slate-900 text-white font-bold hover:bg-indigo-600 transition-all rounded-2xl shadow-lg hover:shadow-xl active:scale-95"
@@ -1225,6 +1294,84 @@ export default function App() {
         </>
         )}
       </main>
+
+      {/* Premium Glassmorphic Footer */}
+      <footer className="relative max-w-7xl mx-auto px-6 pb-12 mt-12">
+        <div className="relative overflow-hidden rounded-[3rem] p-12 sm:p-20 shadow-2xl border border-white/20">
+          {/* Dynamic Background Image */}
+          <div 
+            className="absolute inset-0 z-0 scale-110 blur-[1px]"
+            style={{ 
+              backgroundImage: 'url("https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2070")', 
+              backgroundSize: 'cover', 
+              backgroundPosition: 'center' 
+            }}
+          ></div>
+          {/* Glass Overlay */}
+          <div className="absolute inset-0 bg-slate-900/20 backdrop-blur-xl z-10"></div>
+          
+          <div className="relative z-20 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-12 sm:gap-20">
+            {/* Branding Column */}
+            <div className="lg:col-span-2 space-y-8">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-xl backdrop-blur-xl flex items-center justify-center border border-white/30 shadow-lg">
+                  <BrainCircuit className="w-6 h-6 text-white" />
+                </div>
+                <h2 className="text-2xl font-black text-white tracking-tighter uppercase">Lumina</h2>
+              </div>
+              <p className="text-indigo-50/70 text-base font-medium leading-relaxed max-w-sm">
+                Lumina is a decentralized multi-agent orchestration engine designed for high-fidelity truth discovery and automated forensic analysis.
+              </p>
+              <div className="flex items-center gap-6 pt-4 text-white/50">
+                <button className="hover:text-white transition-colors"><Twitter className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Github className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Instagram className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Globe2 className="w-5 h-5" /></button>
+              </div>
+            </div>
+
+            {/* Links Columns */}
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Technology</h4>
+              <ul className="space-y-4">
+                {['Agent Routing', 'Semantic Search', 'Batch Pipeline', 'Webhook Engine', 'API Specs'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Research</h4>
+              <ul className="space-y-4">
+                {['Forensic Truth', 'AI Transparency', 'Open Research', 'Ethics & Safety', 'Verification Guide'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Legal</h4>
+              <ul className="space-y-4">
+                {['Privacy Policy', 'Terms of Use', 'Security Reports', 'GDPR Compliance', 'Cookie Policy'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          {/* Social Row from Screenshot */}
+          <div className="relative z-20 mt-20 pt-10 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-6">
+            <p className="text-xs font-bold text-white/30 uppercase tracking-widest">© 2024 Lumina Forensic Labs</p>
+            <div className="flex gap-8 items-center opacity-40">
+              <Globe2 className="w-4 h-4 text-white" />
+              <div className="w-1 h-1 rounded-full bg-white/50"></div>
+              <Shield className="w-4 h-4 text-white" />
+              <div className="w-1 h-1 rounded-full bg-white/50"></div>
+              <Activity className="w-4 h-4 text-white" />
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -1637,7 +1784,253 @@ function SearchTrail({ results }: { results: SearchResult[] }) {
   );
 }
 
-// --- Enterprise Mock Pages ---
+function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] }) {
+  const [liveData, setLiveData] = useState<any>(null);
+  const [days, setDays] = useState(30);
+
+  useEffect(() => {
+    if (!user) return;
+    fetch(`/api/usage/summary?userId=${user.id}&days=${days}`)
+      .then(r => r.json())
+      .then(setLiveData)
+      .catch(() => {});
+  }, [user, days]);
+
+  // Build analytics from local history (always available)
+  const verdictCounts = history.reduce((acc, entry) => {
+    const v = entry.judgeResult?.verdict || 'UNVERIFIED';
+    acc[v] = (acc[v] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const verdictPieData = Object.entries(verdictCounts).map(([name, value]) => ({ name, value }));
+  const VERDICT_COLORS: Record<string, string> = {
+    TRUE: '#22c55e', FALSE: '#ef4444', MISLEADING: '#f59e0b',
+    UNVERIFIED: '#94a3b8', 'PARTIALLY TRUE': '#a855f7'
+  };
+
+  const avgConfidence = history.length > 0
+    ? (history.reduce((sum, e) => sum + (e.judgeResult?.confidence_score || 0), 0) / history.length).toFixed(1)
+    : '0';
+
+  // Build last-7-days chart from history
+  const last7 = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    const key = d.toISOString().split('T')[0];
+    const count = history.filter(h => h.createdAt.startsWith(key)).length;
+    return { date: key.slice(5), count }; // MM-DD format
+  });
+
+  const agentConfidence = [
+    { name: 'Skeptic', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.skeptic?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+    { name: 'Supporter', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.supporter?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+    { name: 'Analyst', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.analyst?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+  ];
+
+  const statCards = [
+    { label: 'Claims Analyzed', value: history.length, icon: <Activity className="w-4 h-4" />, color: 'indigo' },
+    { label: 'Avg Confidence', value: `${avgConfidence}%`, icon: <Zap className="w-4 h-4" />, color: 'violet' },
+    { label: 'Credits Used', value: liveData?.total_credits?.toFixed(1) || '0.0', icon: <CreditCard className="w-4 h-4" />, color: 'amber' },
+    { label: 'Remaining Balance', value: liveData?.current_balance?.toFixed(1) || '0.0', icon: <Wallet className="w-4 h-4" />, color: 'emerald' },
+  ];
+
+  if (history.length === 0) return (
+    <div className="text-center py-24 text-slate-500 bg-white border border-slate-200 rounded-[2.5rem]">
+      <BarChart3 className="w-14 h-14 mx-auto mb-4 text-slate-300" />
+      <h3 className="text-lg font-bold text-slate-900 mb-2">No Analytics Data Yet</h3>
+      <p className="text-sm font-medium">Run your first claim verification to start seeing analytics.</p>
+    </div>
+  );
+
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-black text-slate-900 tracking-tight">Usage &amp; Analytics</h2>
+          <p className="text-slate-500 mt-1 font-medium">Insights derived from your {history.length} analyzed claims.</p>
+        </div>
+        <select
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+          className="bg-white border border-slate-200 rounded-xl px-4 py-2 text-sm font-bold text-slate-600 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+        >
+          <option value={7}>Last 7 Days</option>
+          <option value={30}>Last 30 Days</option>
+          <option value={90}>Last 90 Days</option>
+        </select>
+      </div>
+
+      {/* Token Monitoring Section */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 bg-gradient-to-br from-indigo-600 to-violet-700 p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-black tracking-tight">Token Tank</h3>
+                <p className="text-indigo-100 text-sm font-medium opacity-80">Your available compute resource balance</p>
+              </div>
+              <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
+                <Diamond className="w-6 h-6 text-white" />
+              </div>
+            </div>
+
+            <div className="flex items-end gap-3 mb-8">
+              <span className="text-5xl font-black tracking-tighter">{liveData?.current_balance?.toFixed(1) || '0.0'}</span>
+              <span className="text-indigo-200 font-bold mb-1.5 uppercase tracking-widest text-xs">Tokens Remaining</span>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-indigo-100">
+                <span>Usage Progress</span>
+                <span>{(((liveData?.current_balance || 0) / 500) * 100).toFixed(0)}% available</span>
+              </div>
+              <div className="h-3 bg-white/20 rounded-full overflow-hidden backdrop-blur-sm">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, ((liveData?.current_balance || 0) / 500) * 100)}%` }}
+                  className="h-full bg-white rounded-full shadow-[0_0_20px_rgba(255,255,255,0.5)]"
+                />
+              </div>
+            </div>
+          </div>
+          {/* Decorative shapes */}
+          <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-white/10 rounded-full blur-3xl" />
+          <div className="absolute -left-10 -top-10 w-32 h-32 bg-indigo-400/20 rounded-full blur-2xl" />
+        </div>
+
+        <div className="bg-white border border-slate-200 p-6 rounded-[2.5rem] shadow-sm flex flex-col justify-center">
+          <div className="text-center space-y-4">
+            <div className="w-16 h-16 bg-emerald-100 rounded-3xl flex items-center justify-center mx-auto">
+              <Sparkles className="w-8 h-8 text-emerald-600" />
+            </div>
+            <div>
+              <h4 className="font-black text-slate-900">Refill Tokens</h4>
+              <p className="text-sm text-slate-500 font-medium">Enterprise plans get unlimited tokens and priority agent queuing.</p>
+            </div>
+            <button className="w-full py-3 bg-slate-900 text-white rounded-2xl font-bold text-sm hover:bg-slate-800 transition-colors">
+              Upgrade to Pro
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {statCards.map((stat, i) => (
+          <div key={i} className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-2 text-slate-400 mb-3">
+              {stat.icon}
+              <span className="text-[10px] font-bold uppercase tracking-wider">{stat.label}</span>
+            </div>
+            <div className="text-3xl font-black text-slate-800">{stat.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Activity Chart */}
+        <div className="lg:col-span-2 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Analysis Activity (Last 7 Days)</h3>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={last7}>
+                <defs>
+                  <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11}} />
+                <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11}} allowDecimals={false} />
+                <Tooltip contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}} />
+                <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorCount)" name="Claims" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Verdict Distribution */}
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">Verdict Distribution</h3>
+          <div className="flex-1 min-h-0 h-40">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={verdictPieData} innerRadius={45} outerRadius={70} paddingAngle={4} dataKey="value">
+                  {verdictPieData.map((entry, index) => (
+                    <Cell key={index} fill={VERDICT_COLORS[entry.name] || '#94a3b8'} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value, name) => [value, name]} contentStyle={{borderRadius: '12px', border: 'none'}} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-3 space-y-2">
+            {verdictPieData.map((entry, i) => (
+              <div key={i} className="flex items-center justify-between text-xs font-medium">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{backgroundColor: VERDICT_COLORS[entry.name] || '#94a3b8'}} />
+                  <span className="text-slate-500 capitalize">{entry.name.toLowerCase()}</span>
+                </div>
+                <span className="text-slate-900 font-bold">{entry.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Agent Confidence & Recent Claims */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Agent Confidence */}
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Agent Avg Confidence</h3>
+          <div className="space-y-4">
+            {agentConfidence.map((agent, i) => (
+              <div key={i}>
+                <div className="flex justify-between text-sm font-semibold text-slate-700 mb-1">
+                  <span>{agent.name}</span>
+                  <span>{agent.confidence}%</span>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-700"
+                    style={{
+                      width: `${agent.confidence}%`,
+                      background: ['#6366f1','#a855f7','#ec4899'][i]
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Recent Claims */}
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">Recent Claims</h3>
+          <div className="space-y-3">
+            {history.slice(0, 4).map((entry, i) => {
+              const v = entry.judgeResult?.verdict || 'UNVERIFIED';
+              const color = VERDICT_COLORS[v] || '#94a3b8';
+              return (
+                <div key={i} className="flex items-start gap-3 p-3 bg-slate-50 rounded-2xl">
+                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{backgroundColor: color}} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-800 truncate">{entry.claim}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">{v} · {entry.judgeResult?.confidence_score?.toFixed(0)}% confidence</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AnalyticsMockPage() {
   return (
@@ -1677,45 +2070,345 @@ function AnalyticsMockPage() {
   );
 }
 
+const REVIEW_FLAGS = {
+  'low_confidence': { label: 'Low Confidence', color: 'bg-amber-100 text-amber-800 border-amber-200', icon: '⚠️' },
+  'high_bias': { label: 'High Bias Detected', color: 'bg-rose-100 text-rose-800 border-rose-200', icon: '🎯' },
+  'split_verdict': { label: 'Agent Split', color: 'bg-purple-100 text-purple-800 border-purple-200', icon: '⚖️' },
+  'sensitive_topic': { label: 'Sensitive Topic', color: 'bg-orange-100 text-orange-800 border-orange-200', icon: '🔒' },
+  'medical': { label: 'Medical Claim', color: 'bg-blue-100 text-blue-800 border-blue-200', icon: '🏥' },
+  'legal': { label: 'Legal Claim', color: 'bg-indigo-100 text-indigo-800 border-indigo-200', icon: '⚖️' },
+};
+
+const INITIAL_QUEUE = [
+  {
+    id: 'REQ-892', priority: 'high',
+    claim: 'New tax regulations apply retroactively to 2024 income.', 
+    aiVerdict: 'Misleading', aiConfidence: 42,
+    flags: ['low_confidence', 'legal'],
+    submittedAt: '2026-05-06T08:12:00Z', submittedBy: 'api-user-4421',
+    agentSummary: 'Skeptic: Contradicts IRS guidelines. Supporter: Found partial precedents. Analyst: Split on interpretation.',
+    aiReason: 'IRS retroactive tax policies are highly context-dependent and no 2024 ruling matches this description exactly.',
+    status: 'pending', humanVerdict: null, analystNote: '',
+    sources: ['irs.gov', 'taxfoundation.org', 'wsj.com'],
+  },
+  {
+    id: 'REQ-891', priority: 'critical',
+    claim: 'Clinical trials show 100% efficacy for the new mRNA treatment for Alzheimer\'s.',
+    aiVerdict: 'Unverified', aiConfidence: 15,
+    flags: ['low_confidence', 'high_bias', 'medical'],
+    submittedAt: '2026-05-06T07:44:00Z', submittedBy: 'user@example.com',
+    agentSummary: 'Skeptic: No peer-reviewed trials found. Supporter: Found a pre-print, not peer reviewed. Analyst: Unverified.',
+    aiReason: 'No FDA-registered phase-3 trial for an mRNA Alzheimer\'s treatment with 100% efficacy exists in public databases.',
+    status: 'pending', humanVerdict: null, analystNote: '',
+    sources: ['pubmed.ncbi.nlm.nih.gov', 'clinicaltrials.gov', 'fda.gov'],
+  },
+  {
+    id: 'REQ-888', priority: 'medium',
+    claim: 'Company X is filing for bankruptcy next week according to an internal memo.',
+    aiVerdict: 'Partially True', aiConfidence: 55,
+    flags: ['split_verdict', 'sensitive_topic'],
+    submittedAt: '2026-05-06T06:30:00Z', submittedBy: 'batch-job-7',
+    agentSummary: 'Skeptic: Could not verify memo. Supporter: Found related SEC filings. Analyst: Possible restructuring, not full bankruptcy.',
+    aiReason: 'Public signals (SEC filings, credit downgrades) suggest financial distress but "next week bankruptcy" is unverified.',
+    status: 'reviewing', humanVerdict: null, analystNote: 'Checking SEC EDGAR directly.',
+    sources: ['sec.gov', 'bloomberg.com', 'reuters.com'],
+  },
+  {
+    id: 'REQ-885', priority: 'low',
+    claim: 'Drinking coffee before bed improves REM sleep quality according to a Stanford study.',
+    aiVerdict: 'False', aiConfidence: 88,
+    flags: ['high_bias', 'medical'],
+    submittedAt: '2026-05-06T05:10:00Z', submittedBy: 'user@healthblog.io',
+    agentSummary: 'Skeptic: No such Stanford study exists. Supporter: Found unrelated caffeine studies. Analyst: Strong consensus that caffeine disrupts sleep.',
+    aiReason: 'Caffeine has a half-life of ~5-6 hours and is a well-established sleep disruptor. No Stanford REM study matching this description exists.',
+    status: 'approved', humanVerdict: 'False', analystNote: 'AI verdict confirmed. Claim fabricated a source.',
+    sources: ['stanford.edu/sleep', 'sleepfoundation.org', 'pubmed.ncbi.nlm.nih.gov'],
+  },
+];
+
 function ReviewQueueMockPage() {
-  const mockQueue = [
-    { id: 'REQ-892', claim: 'New tax regulations apply retroactively to 2024.', score: '42%', status: 'Flagged - Low Confidence' },
-    { id: 'REQ-891', claim: 'Clinical trials show 100% efficacy for the new treatment.', score: '15%', status: 'Flagged - High Bias' },
-    { id: 'REQ-888', claim: 'Company X is filing for bankruptcy next week.', score: '55%', status: 'Flagged - Minority Dissent' },
-  ];
+  const [queue, setQueue] = useState<any[]>(INITIAL_QUEUE);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'reviewing' | 'approved' | 'rejected'>('all');
+  const [noteText, setNoteText] = useState<Record<string, string>>({});
+
+  const filtered = filter === 'all' ? queue : queue.filter(q => q.status === filter);
+
+  const updateStatus = (id: string, status: string, verdict?: string) => {
+    setQueue(prev => prev.map(item => item.id === id
+      ? { ...item, status, humanVerdict: verdict ?? item.humanVerdict, analystNote: noteText[id] ?? item.analystNote }
+      : item
+    ));
+    if (verdict) setExpandedId(null);
+  };
+
+  const counts = {
+    pending: queue.filter(q => q.status === 'pending').length,
+    reviewing: queue.filter(q => q.status === 'reviewing').length,
+    approved: queue.filter(q => q.status === 'approved').length,
+    rejected: queue.filter(q => q.status === 'rejected').length,
+  };
+
+  const priorityColor = (p: string) =>
+    p === 'critical' ? 'bg-rose-500' : p === 'high' ? 'bg-amber-500' : p === 'medium' ? 'bg-blue-400' : 'bg-slate-300';
+
+  const statusBadge = (s: string) => {
+    switch (s) {
+      case 'pending':   return 'bg-amber-100 text-amber-800 border border-amber-200';
+      case 'reviewing': return 'bg-blue-100 text-blue-800 border border-blue-200';
+      case 'approved':  return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+      case 'rejected':  return 'bg-rose-100 text-rose-800 border border-rose-200';
+      default:          return 'bg-slate-100 text-slate-600';
+    }
+  };
+
+  const verdictColor = (v: string) => {
+    switch (v) {
+      case 'True': return 'text-emerald-600 bg-emerald-50 border-emerald-200';
+      case 'False': return 'text-rose-600 bg-rose-50 border-rose-200';
+      case 'Misleading': return 'text-amber-600 bg-amber-50 border-amber-200';
+      default: return 'text-slate-600 bg-slate-50 border-slate-200';
+    }
+  };
 
   return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-6xl mx-auto">
+      {/* Header */}
       <div className="mb-8">
-        <h2 className="text-3xl font-black text-slate-900 tracking-tight">Manual Review Queue</h2>
-        <p className="text-slate-500 mt-2 font-medium">Claims requiring human analyst verification due to low system confidence.</p>
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
-        <div className="grid grid-cols-12 gap-4 p-4 bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase tracking-wider text-slate-500">
-          <div className="col-span-2">ID</div>
-          <div className="col-span-6">Claim Snippet</div>
-          <div className="col-span-2">Confidence</div>
-          <div className="col-span-2">Status</div>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-2xl bg-amber-100 flex items-center justify-center">
+            <ShieldAlert className="w-5 h-5 text-amber-600" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-black text-slate-900 tracking-tight">Manual Review Queue</h2>
+            <p className="text-slate-500 text-sm font-medium mt-0.5">Human-in-the-loop verification for flagged claims</p>
+          </div>
         </div>
-        <div className="divide-y divide-slate-100">
-          {mockQueue.map((item, i) => (
-            <div key={i} className="grid grid-cols-12 gap-4 p-4 items-center hover:bg-slate-50 cursor-pointer transition-colors">
-              <div className="col-span-2 text-sm font-mono text-slate-400">{item.id}</div>
-              <div className="col-span-6 text-sm font-medium text-slate-800 truncate pr-4">{item.claim}</div>
-              <div className="col-span-2 text-sm font-bold text-rose-500">{item.score}</div>
-              <div className="col-span-2">
-                <span className="inline-flex px-2 py-1 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-md whitespace-nowrap">
-                  {item.status}
-                </span>
+
+        {/* Stats strip */}
+        <div className="grid grid-cols-4 gap-4 mt-6">
+          {[
+            { label: 'Pending', count: counts.pending, color: 'bg-amber-50 border-amber-200 text-amber-700', dot: 'bg-amber-400' },
+            { label: 'In Review', count: counts.reviewing, color: 'bg-blue-50 border-blue-200 text-blue-700', dot: 'bg-blue-400' },
+            { label: 'Approved', count: counts.approved, color: 'bg-emerald-50 border-emerald-200 text-emerald-700', dot: 'bg-emerald-400' },
+            { label: 'Rejected', count: counts.rejected, color: 'bg-rose-50 border-rose-200 text-rose-700', dot: 'bg-rose-400' },
+          ].map(s => (
+            <button
+              key={s.label}
+              onClick={() => setFilter(s.label.replace(' ', '').toLowerCase() as any)}
+              className={`px-4 py-3 rounded-2xl border text-left transition-all hover:scale-[1.02] ${s.color} ${filter === s.label.toLowerCase().replace(' ', '') ? 'ring-2 ring-offset-1 ring-slate-300' : ''}`}
+            >
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className={`w-2 h-2 rounded-full ${s.dot}`} />
+                <p className="text-[10px] font-bold uppercase tracking-widest">{s.label}</p>
               </div>
-            </div>
+              <p className="text-2xl font-black">{s.count}</p>
+            </button>
           ))}
         </div>
+
+        {/* Filter bar */}
+        <div className="flex items-center gap-2 mt-4">
+          {(['all', 'pending', 'reviewing', 'approved', 'rejected'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${filter === f ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+            >
+              {f === 'all' ? `All (${queue.length})` : f}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Queue list */}
+      <div className="space-y-3">
+        {filtered.length === 0 && (
+          <div className="text-center py-16 text-slate-400">
+            <ShieldAlert className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p className="font-bold">No claims in this category</p>
+          </div>
+        )}
+        {filtered.map((item) => {
+          const isExpanded = expandedId === item.id;
+          return (
+            <motion.div key={item.id} layout className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+              {/* Row header */}
+              <div
+                className="flex items-center gap-4 p-4 cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => setExpandedId(isExpanded ? null : item.id)}
+              >
+                {/* Priority dot */}
+                <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${priorityColor(item.priority)}`} title={`${item.priority} priority`} />
+                
+                {/* ID */}
+                <span className="text-xs font-mono text-slate-400 w-20 flex-shrink-0">{item.id}</span>
+
+                {/* Claim text */}
+                <p className="flex-1 text-sm font-semibold text-slate-800 truncate">{item.claim}</p>
+
+                {/* Flags */}
+                <div className="hidden md:flex items-center gap-1 flex-shrink-0">
+                  {item.flags.map((f: string) => (
+                    <span key={f} className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${(REVIEW_FLAGS as any)[f]?.color}`}>
+                      {(REVIEW_FLAGS as any)[f]?.icon} {(REVIEW_FLAGS as any)[f]?.label}
+                    </span>
+                  ))}
+                </div>
+
+                {/* AI Confidence */}
+                <div className="flex-shrink-0 text-right w-20">
+                  <p className={`text-sm font-black ${item.aiConfidence < 40 ? 'text-rose-500' : item.aiConfidence < 70 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                    {item.aiConfidence}%
+                  </p>
+                  <p className="text-[9px] text-slate-400 font-medium">AI Conf.</p>
+                </div>
+
+                {/* Status */}
+                <span className={`flex-shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full capitalize ${statusBadge(item.status)}`}>
+                  {item.status}
+                </span>
+
+                {/* Expand chevron */}
+                <ChevronDown className={`w-4 h-4 text-slate-400 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+              </div>
+
+              {/* Expanded panel */}
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="border-t border-slate-100 overflow-hidden"
+                  >
+                    <div className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      {/* Left: AI analysis */}
+                      <div className="lg:col-span-2 space-y-4">
+                        <div className="bg-slate-50 rounded-2xl p-4">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Full Claim</p>
+                          <p className="text-sm font-medium text-slate-800 leading-relaxed">"{item.claim}"</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3">
+                            <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">AI Verdict</p>
+                            <span className={`text-xs font-black px-2 py-0.5 rounded-full border ${verdictColor(item.aiVerdict)}`}>{item.aiVerdict}</span>
+                          </div>
+                          <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Submitted By</p>
+                            <p className="text-xs font-bold text-slate-700 truncate">{item.submittedBy}</p>
+                            <p className="text-[9px] text-slate-400">{new Date(item.submittedAt).toLocaleString()}</p>
+                          </div>
+                        </div>
+
+                        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                          <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-2">🤖 AI Reasoning</p>
+                          <p className="text-xs text-slate-700 leading-relaxed">{item.aiReason}</p>
+                        </div>
+
+                        <div className="bg-purple-50 border border-purple-100 rounded-xl p-4">
+                          <p className="text-[10px] font-black text-purple-500 uppercase tracking-widest mb-2">⚖️ Agent Debate Summary</p>
+                          <p className="text-xs text-slate-700 leading-relaxed">{item.agentSummary}</p>
+                        </div>
+
+                        <div>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Sources Cited</p>
+                          <div className="flex flex-wrap gap-2">
+                            {item.sources.map((s: string) => (
+                              <span key={s} className="text-[10px] font-bold px-2 py-1 bg-slate-100 text-slate-600 rounded-lg border border-slate-200">{s}</span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Human action panel */}
+                      <div className="space-y-4">
+                        <div className="bg-white border-2 border-slate-200 rounded-2xl p-4">
+                          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">🧑‍⚖️ Analyst Decision</p>
+
+                          {item.status === 'approved' || item.status === 'rejected' ? (
+                            <div className={`p-3 rounded-xl text-center ${item.humanVerdict ? verdictColor(item.humanVerdict) : 'bg-rose-50 border border-rose-200 text-rose-700'}`}>
+                              <p className="text-xs font-black">{item.status === 'rejected' ? '🚫 REJECTED' : '✅ APPROVED'}</p>
+                              {item.humanVerdict && <p className="text-lg font-black mt-1">{item.humanVerdict}</p>}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              {['True', 'False', 'Misleading', 'Unverified'].map(v => (
+                                <button
+                                  key={v}
+                                  onClick={() => updateStatus(item.id, 'approved', v)}
+                                  className={`py-2 text-xs font-black rounded-xl border transition-all hover:scale-[1.03] active:scale-95 ${verdictColor(v)} hover:shadow-sm`}
+                                >
+                                  {v}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="mt-3 space-y-2">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Internal Note</p>
+                            <textarea
+                              rows={3}
+                              value={noteText[item.id] ?? item.analystNote}
+                              onChange={e => setNoteText(prev => ({ ...prev, [item.id]: e.target.value }))}
+                              placeholder="Add reasoning, escalation notes, or source references..."
+                              className="w-full text-xs font-medium px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 resize-none text-slate-700 placeholder:text-slate-300"
+                            />
+                          </div>
+
+                          {item.status !== 'approved' && item.status !== 'rejected' && (
+                            <div className="flex gap-2 mt-3">
+                              <button
+                                onClick={() => updateStatus(item.id, 'reviewing')}
+                                className="flex-1 py-2 text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors"
+                              >
+                                📋 Assign to Me
+                              </button>
+                              <button
+                                onClick={() => updateStatus(item.id, 'rejected')}
+                                className="flex-1 py-2 text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 rounded-xl hover:bg-rose-100 transition-colors"
+                              >
+                                🚫 Reject Claim
+                              </button>
+                            </div>
+                          )}
+
+                          {(item.status === 'approved' || item.status === 'rejected') && item.analystNote && (
+                            <div className="mt-3 bg-slate-50 border border-slate-100 rounded-xl p-3">
+                              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Analyst Note</p>
+                              <p className="text-xs text-slate-600 italic">"{item.analystNote}"</p>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Escalation */}
+                        <button className="w-full py-2.5 text-xs font-bold text-slate-500 border border-dashed border-slate-200 rounded-xl hover:border-indigo-300 hover:text-indigo-500 transition-colors">
+                          🔺 Escalate to Senior Analyst
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Footer summary */}
+      <div className="mt-6 p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between">
+        <div className="flex items-center gap-2 text-slate-500">
+          <Clock className="w-4 h-4" />
+          <p className="text-xs font-medium">Queue refreshes every 60s in production · <span className="font-bold text-slate-700">{queue.length} total claims</span></p>
+        </div>
+        <button className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors">
+          Export Review Log →
+        </button>
       </div>
     </div>
   );
 }
+
 
 function BatchMockPage() {
   const [items, setItems] = useState<any[]>([]);
@@ -2144,7 +2837,14 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
   const handleAdd = async () => {
     if (!supabase || !newName || !newUrl) return;
     try {
-      const { error } = await supabase.from('webhooks').insert([{ name: newName, url: newUrl, events: ['verdict.ready'] }]);
+      // Include user_id so RLS policy (user_id = auth.uid()) is satisfied
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase.from('webhooks').insert([{
+        name: newName,
+        url: newUrl,
+        events: ['verdict.ready'],
+        user_id: user?.id ?? null,
+      }]);
       if (!error) {
         setNewName('');
         setNewUrl('');
@@ -2271,6 +2971,232 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
   );
 }
 
+// ============================================================
+// TRUTH RADAR PAGE
+// ============================================================
+const VERDICT_CONFIG: Record<string, { color: string; bg: string; border: string; dot: string; label: string }> = {
+  'True':               { color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', dot: 'bg-emerald-400', label: 'VERIFIED TRUE' },
+  'False':              { color: 'text-rose-400',    bg: 'bg-rose-500/10',    border: 'border-rose-500/30',    dot: 'bg-rose-400',    label: 'DEBUNKED' },
+  'Partially True':     { color: 'text-amber-400',   bg: 'bg-amber-500/10',   border: 'border-amber-500/30',   dot: 'bg-amber-400',   label: 'MISLEADING' },
+  'Insufficient Evidence': { color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-500/30',   dot: 'bg-slate-400',   label: 'UNVERIFIED' },
+};
+
+function RadarPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean; onUpgrade: () => void }) {
+  const [feed, setFeed] = useState<any[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [unlocked, setUnlocked] = useState(isSubscribed || localStorage.getItem('radar_demo') === 'true');
+  const [stats, setStats] = useState({ total: 0, true: 0, false: 0, partial: 0 });
+  const feedRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    const es = new EventSource('/api/radar-stream');
+    es.onopen = () => {
+      console.log('✅ Truth Radar connected');
+      setConnected(true);
+    };
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'connected') return;
+        setFeed(prev => [data, ...prev].slice(0, 50));
+        setStats(prev => ({
+          total: prev.total + 1,
+          true: prev.true + (data.verdict === 'True' ? 1 : 0),
+          false: prev.false + (data.verdict === 'False' ? 1 : 0),
+          partial: prev.partial + (data.verdict === 'Partially True' ? 1 : 0),
+        }));
+      } catch (err) {
+        console.warn('Failed to parse radar event', err);
+      }
+    };
+    es.onerror = (err) => {
+      console.error('❌ Truth Radar connection error:', err);
+      setConnected(false);
+    };
+    return () => es.close();
+  }, [unlocked]);
+
+  // Auto-scroll to top when new items arrive
+  useEffect(() => {
+    feedRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [feed.length]);
+
+  if (!unlocked) {
+    return (
+      <div className="relative min-h-[70vh] flex items-center justify-center overflow-hidden rounded-3xl">
+        {/* Blurred preview */}
+        <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-3xl">
+          <div className="space-y-3 p-8 opacity-30 blur-sm">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="bg-slate-800 rounded-2xl p-4 flex items-start gap-3 border border-white/10">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 bg-slate-700 rounded w-3/4" />
+                  <div className="h-2 bg-slate-700/50 rounded w-1/2" />
+                </div>
+                <div className="px-3 py-1 rounded-full bg-emerald-500/20 h-6 w-16" />
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Lock overlay */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="relative z-10 bg-[#080B14]/90 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-12 text-center max-w-md mx-4 shadow-2xl"
+        >
+          <div className="w-20 h-20 bg-gradient-to-br from-indigo-500/20 to-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-indigo-500/30">
+            <Lock className="w-10 h-10 text-indigo-400" />
+          </div>
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-indigo-300 text-[10px] font-bold uppercase tracking-widest mb-4">
+            <Activity className="w-3 h-3" /> PRO Feature
+          </div>
+          <h2 className="text-3xl font-black text-white mb-3 tracking-tight">Truth Radar</h2>
+          <p className="text-slate-400 text-sm font-medium leading-relaxed mb-8">
+            A proactive immune system for the internet. Watch AI agents fact-check trending claims in real-time, 24/7.
+          </p>
+          <div className="space-y-3">
+            <button
+              onClick={onUpgrade}
+              className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black rounded-2xl hover:opacity-90 transition-all active:scale-95 shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-2"
+            >
+              <Zap className="w-5 h-5" /> Unlock with Pro Plan
+            </button>
+            <button
+              onClick={() => { localStorage.setItem('radar_demo', 'true'); setUnlocked(true); }}
+              className="w-full py-3 bg-white/5 text-white/40 font-bold rounded-2xl border border-white/10 hover:bg-white/10 hover:text-white/60 transition-all text-sm"
+            >
+              Demo Access (Dev Only)
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-[80vh] bg-[#080B14] rounded-3xl overflow-hidden text-white relative">
+      {/* Animated background grid */}
+      <div className="absolute inset-0 opacity-5 pointer-events-none"
+        style={{ backgroundImage: 'linear-gradient(rgba(99,102,241,0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.4) 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+      {/* Glow */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-indigo-600/10 rounded-full blur-[120px] pointer-events-none" />
+
+      {/* Header */}
+      <div className="relative z-10 border-b border-white/5 px-8 py-6 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-indigo-500/20 rounded-2xl flex items-center justify-center border border-indigo-500/30">
+            <Activity className="w-6 h-6 text-indigo-400" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-black tracking-tight">Truth Radar</h2>
+              <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                {connected ? 'LIVE' : 'CONNECTING...'}
+              </div>
+            </div>
+            <p className="text-slate-500 text-sm font-medium mt-0.5">Monitoring global claims in real-time</p>
+          </div>
+        </div>
+        {/* Live Stats */}
+        <div className="hidden md:flex items-center gap-6">
+          {[
+            { label: 'Total', value: stats.total, color: 'text-white' },
+            { label: 'Verified', value: stats.true, color: 'text-emerald-400' },
+            { label: 'Debunked', value: stats.false, color: 'text-rose-400' },
+            { label: 'Misleading', value: stats.partial, color: 'text-amber-400' },
+          ].map(s => (
+            <div key={s.label} className="text-center">
+              <p className={`text-2xl font-black ${s.color}`}>{s.value}</p>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Feed */}
+      <div ref={feedRef} className="relative z-10 p-6 space-y-3 max-h-[70vh] overflow-y-auto">
+        {feed.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 text-slate-600">
+            <Activity className="w-16 h-16 mb-4 animate-pulse opacity-30" />
+            <p className="font-bold text-lg">Scanning the internet...</p>
+            <p className="text-sm mt-1 opacity-50">First verdict arrives in ~2 seconds</p>
+          </div>
+        )}
+        <AnimatePresence mode="popLayout">
+          {feed.map((item) => {
+            const cfg = VERDICT_CONFIG[item.verdict] || VERDICT_CONFIG['Insufficient Evidence'];
+            return (
+              <motion.div
+                key={item.id}
+                layout
+                initial={{ opacity: 0, y: -20, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+                className={`relative p-4 rounded-2xl border ${cfg.bg} ${cfg.border} overflow-hidden group hover:border-opacity-60 transition-all`}
+              >
+                <div className="flex items-start gap-4">
+                  {/* Icon + Category */}
+                  <div className="flex-shrink-0 text-center">
+                    <div className="text-2xl">{item.icon}</div>
+                    <div className="mt-1 text-[8px] font-bold text-slate-500 uppercase tracking-widest w-14 truncate">{item.category}</div>
+                  </div>
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-white leading-snug mb-1.5">{item.claim}</p>
+                    <p className="text-xs text-slate-400 font-medium leading-relaxed line-clamp-2">{item.short_reason}</p>
+                    {item.key_points?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {item.key_points.map((pt: string, i: number) => (
+                          <span key={i} className="text-[9px] font-bold px-2 py-0.5 bg-white/5 text-slate-400 rounded-full border border-white/5 truncate max-w-[200px]">
+                            {pt}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Verdict Badge */}
+                  <div className="flex-shrink-0 flex flex-col items-end gap-2">
+                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${cfg.bg} border ${cfg.border}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+                      <span className={`text-[10px] font-black uppercase tracking-wider ${cfg.color}`}>{cfg.label}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="w-16 h-1 bg-white/5 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${cfg.dot}`} style={{ width: `${Math.round(item.confidence * 100)}%` }} />
+                      </div>
+                      <p className={`text-[9px] font-bold mt-1 ${cfg.color}`}>{Math.round(item.confidence * 100)}% conf.</p>
+                    </div>
+                    <p className="text-[9px] text-slate-600 font-medium">
+                      {new Date(item.timestamp).toLocaleTimeString()}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+
+      {/* Footer status bar */}
+      <div className="relative z-10 border-t border-white/5 px-8 py-3 flex items-center justify-between">
+        <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">
+          {feed.length} claims analyzed · New claim every ~15s · 🧠 Simulated Engine
+        </p>
+        <button
+          onClick={() => { setFeed([]); setStats({ total: 0, true: 0, false: 0, partial: 0 }); }}
+          className="text-[10px] font-bold text-slate-600 hover:text-rose-400 transition-colors uppercase tracking-widest"
+        >
+          Clear Feed
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }) {
   const [groqKey, setGroqKey] = useState('');
   const [openRouterKey, setOpenRouterKey] = useState('');
@@ -2314,20 +3240,35 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
     if (!supabase) return;
     try {
       const [uRes, lRes] = await Promise.all([
-        supabase.from('profiles').select('*').limit(20), // Use public profiles table
-        fetch('/api/admin/access-logs').then(r => r.json())
+        supabase.from('profiles').select('*').limit(20),
+        fetch('/api/admin/access-logs').then(r => r.json()).catch(() => [])
       ]);
       if (uRes.data) setUsers(uRes.data);
-      if (lRes) setAccessLogs(lRes);
+      // Guard: only set if server returned an array (not an error object)
+      if (Array.isArray(lRes)) {
+        setAccessLogs(lRes);
+      } else {
+        console.warn('access-logs returned non-array:', lRes);
+        setAccessLogs([]);
+      }
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
+      setAccessLogs([]);
     }
   };
 
   const fetchPerformance = async () => {
     if (!supabase) return;
-    const { data } = await supabase.from('performance_logs').select('*').order('timestamp', { ascending: false }).limit(20);
-    if (data) setPerformance(data);
+    try {
+      // Try 'created_at' first (phase0 schema), fall back to no-order if column missing
+      let result = await supabase.from('performance_logs').select('*').order('created_at', { ascending: false }).limit(20);
+      if (result.error) {
+        result = await supabase.from('performance_logs').select('*').limit(20);
+      }
+      if (result.data) setPerformance(result.data);
+    } catch (err) {
+      console.warn('Failed to fetch performance logs:', err);
+    }
   };
 
   useEffect(() => {
@@ -2484,7 +3425,7 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                       onChange={(e) => setRouting(prev => ({ ...prev, [role]: e.target.value }))}
                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                     >
-                      <option value="google/gemini-flash-1.5">Gemini 1.5 Flash (Fast)</option>
+                      <option value="google/gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
                       <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash</option>
                       <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
                       <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
@@ -2492,6 +3433,78 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+
+          {/* ===== TEST LAB ===== */}
+          <div className={`border rounded-3xl overflow-hidden shadow-sm transition-all duration-300 ${testMode ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-200' : 'bg-white border-slate-200'}`}>
+            <div className="px-6 py-4 border-b border-amber-200/50 bg-amber-50 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Play className={`w-5 h-5 ${testMode ? 'text-amber-600' : 'text-slate-400'}`} />
+                <h3 className={`font-bold ${testMode ? 'text-amber-800' : 'text-slate-800'}`}>Test Lab</h3>
+                {testMode && (
+                  <span className="ml-2 px-2 py-0.5 bg-amber-500 text-white text-[9px] font-black uppercase tracking-widest rounded-full animate-pulse">
+                    LIVE — No tokens burned
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className={`text-sm font-medium ${testMode ? 'text-amber-700' : 'text-slate-500'}`}>
+                {testMode 
+                  ? '✅ Test mode is active. Click a claim below to simulate the full verification pipeline instantly — no API calls, zero token cost.' 
+                  : 'Enable Test Mode in the Agent Routing Engine above to run preset claims through the full verification UI without burning any API tokens.'
+                }
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {[
+                  { label: '5G Technology and Health Impacts', icon: '📡', verdict: 'Partially True', color: 'amber' },
+                  { label: 'Historical Accuracy of Apollo 11', icon: '🚀', verdict: 'True', color: 'emerald' },
+                  { label: 'Global Temperature Trends 2024', icon: '🌡️', verdict: 'True', color: 'emerald' },
+                  { label: 'Impact of Microplastics on Sea Life', icon: '🌊', verdict: 'True', color: 'emerald' },
+                ].map((item) => (
+                  <button
+                    key={item.label}
+                    disabled={!testMode}
+                    onClick={() => {
+                      navigator.clipboard.writeText(item.label);
+                      alert(`✅ Claim copied to clipboard!\n\nPaste into the verify box on the main dashboard:\n"${item.label}"\n\nExpected: ${item.verdict}`);
+                    }}
+                    className={`p-4 rounded-2xl border text-left flex items-start gap-3 transition-all group ${
+                      testMode 
+                        ? 'bg-white border-amber-200 hover:border-amber-400 hover:shadow-md cursor-pointer active:scale-95' 
+                        : 'bg-slate-50 border-slate-100 opacity-50 cursor-not-allowed'
+                    }`}
+                  >
+                    <span className="text-2xl">{item.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-slate-800 leading-tight">{item.label}</p>
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                          item.verdict === 'True' ? 'bg-emerald-100 text-emerald-700' : 
+                          item.verdict === 'False' ? 'bg-rose-100 text-rose-700' :
+                          'bg-amber-100 text-amber-700'
+                        }`}>
+                          Expected: {item.verdict}
+                        </span>
+                        {testMode && (
+                          <span className="text-[9px] text-slate-400 font-medium group-hover:text-amber-500 transition-colors">
+                            Click to copy →
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {testMode && (
+                <div className="bg-amber-100/60 border border-amber-200 rounded-2xl px-4 py-3 flex items-start gap-3">
+                  <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-amber-700 font-medium leading-relaxed">
+                    <strong>How it works:</strong> Click a claim to copy it → paste into the main dashboard verify box → click Analyze. The system will return a detailed pre-built response instantly with no AI model calls. Disable Test Mode before going live.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 

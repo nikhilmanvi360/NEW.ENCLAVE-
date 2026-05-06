@@ -6,8 +6,13 @@ import {
   Twitter, 
   Youtube, 
   Instagram, 
+  Github,
   ArrowRight, 
-  Sparkles 
+  Sparkles,
+  BrainCircuit,
+  Globe2,
+  Shield,
+  Activity
 } from 'lucide-react';
 
 interface LandingPageProps {
@@ -75,72 +80,83 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
           </motion.button>
         </div>
 
-        {/* Footer */}
+        {/* Premium Glassmorphic Footer */}
         <motion.footer
           initial={{ opacity: 0, y: 40 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 1, delay: 0.4, ease: "easeOut" }}
-          className="liquid-glass w-full rounded-3xl p-6 md:p-10 text-white mt-32 md:mt-64 mb-10"
+          className="relative w-full overflow-hidden rounded-[3rem] p-12 sm:p-20 shadow-2xl border border-white/20 mt-32 md:mt-64 mb-10"
         >
-          {/* Top Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-10 md:gap-12 mb-10">
-            {/* Column 1: Logo & Description */}
-            <div className="md:col-span-5 space-y-6">
+          {/* Dynamic Background Image */}
+          <div 
+            className="absolute inset-0 z-0 scale-110 blur-[1px]"
+            style={{ 
+              backgroundImage: 'url("https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2070")', 
+              backgroundSize: 'cover', 
+              backgroundPosition: 'center' 
+            }}
+          ></div>
+          {/* Glass Overlay */}
+          <div className="absolute inset-0 bg-slate-900/20 backdrop-blur-xl z-10"></div>
+          
+          <div className="relative z-20 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-12 sm:gap-20">
+            {/* Branding Column */}
+            <div className="lg:col-span-2 space-y-8">
               <div className="flex items-center gap-3">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 256 256" fill="currentColor">
-                  <path d="M 4.688 136 C 68.373 136 120 187.627 120 251.312 C 120 252.883 119.967 254.445 119.905 256 L 0 256 L 0 136.096 C 1.555 136.034 3.117 136 4.688 136 Z M 251.312 136 C 252.883 136 254.445 136.034 256 136.096 L 256 256 L 136.095 256 C 136.032 254.438 136.001 252.875 136 251.312 C 136 187.627 187.627 136 251.312 136 Z M 119.905 0 C 119.967 1.555 120 3.117 120 4.688 C 120 68.373 68.373 120 4.687 120 C 3.117 120 1.555 119.967 0 119.905 L 0 0 Z M 256 119.905 C 254.445 119.967 252.883 120 251.312 120 C 187.627 120 136 68.373 136 4.687 C 136 3.117 136.033 1.555 136.095 0 L 256 0 Z" />
-                </svg>
-                <span className="text-xl font-medium tracking-tight text-white">LUMINA</span>
+                <div className="w-10 h-10 bg-white/20 rounded-xl backdrop-blur-xl flex items-center justify-center border border-white/30 shadow-lg text-white">
+                  <BrainCircuit className="w-6 h-6" />
+                </div>
+                <h2 className="text-2xl font-black text-white tracking-tighter uppercase">Lumina</h2>
               </div>
-              <p className="text-sm leading-relaxed max-w-sm text-white font-medium drop-shadow-sm">
-                Lumina provides premium clarity on global events and cosmic wonders - shared with all for free.
+              <p className="text-indigo-50/70 text-base font-medium leading-relaxed max-w-sm">
+                Lumina is a decentralized multi-agent orchestration engine designed for high-fidelity truth discovery and automated forensic analysis.
               </p>
+              <div className="flex items-center gap-6 pt-4 text-white/50">
+                <button className="hover:text-white transition-colors"><Twitter className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Github className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Instagram className="w-5 h-5" /></button>
+                <button className="hover:text-white transition-colors"><Globe2 className="w-5 h-5" /></button>
+              </div>
             </div>
 
-            {/* Column 2: Links */}
-            <div className="md:col-span-7 grid grid-cols-2 sm:grid-cols-3 gap-8">
-              <div>
-                <h4 className="text-sm uppercase tracking-wider text-white font-medium mb-4">Discover</h4>
-                <ul className="text-xs space-y-2 text-white/90">
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Labs & Workshops</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Deep Dive Series</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Global Circle</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Resource Vault</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Future Roadmap</a></li>
-                </ul>
-              </div>
-              <div>
-                <h4 className="text-sm uppercase tracking-wider text-white font-medium mb-4">The Mission</h4>
-                <ul className="text-xs space-y-2 text-white/90">
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Origin Story</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">The Collective</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Newsroom Hub</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Join the Team</a></li>
-                </ul>
-              </div>
-              <div>
-                <h4 className="text-sm uppercase tracking-wider text-white font-medium mb-4">Concierge</h4>
-                <ul className="text-xs space-y-2 text-white/90">
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Get in Touch</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Legal Privacy</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">User Agreement</a></li>
-                  <li><a href="#" className="hover:text-white hover:underline transition-colors">Report Concern</a></li>
-                </ul>
-              </div>
+            {/* Links Columns */}
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Technology</h4>
+              <ul className="space-y-4">
+                {['Agent Routing', 'Semantic Search', 'Batch Pipeline', 'Webhook Engine', 'API Specs'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Research</h4>
+              <ul className="space-y-4">
+                {['Forensic Truth', 'AI Transparency', 'Open Research', 'Ethics & Safety', 'Verification Guide'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-black text-white uppercase tracking-[0.2em] mb-8 opacity-80">Legal</h4>
+              <ul className="space-y-4">
+                {['Privacy Policy', 'Terms of Use', 'Security Reports', 'GDPR Compliance', 'Cookie Policy'].map(item => (
+                  <li key={item}><button className="text-sm font-bold text-indigo-50/60 hover:text-white transition-colors">{item}</button></li>
+                ))}
+              </ul>
             </div>
           </div>
 
-          {/* Bottom Bar */}
-          <div className="pt-6 border-t border-white/20 flex flex-col md:flex-row items-center justify-center gap-6 md:gap-4">
-
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                {[Music2, Facebook, Twitter, Youtube, Instagram].map((Icon, i) => (
-                  <a key={i} href="#" className="opacity-80 hover:opacity-100 transition-colors text-white">
-                    <Icon size={16} />
-                  </a>
-                ))}
-              </div>
+          {/* Social Row from Screenshot */}
+          <div className="relative z-20 mt-20 pt-10 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-6">
+            <p className="text-xs font-bold text-white/30 uppercase tracking-widest">© 2024 Lumina Forensic Labs</p>
+            <div className="flex gap-8 items-center opacity-40 text-white">
+              <Globe2 className="w-4 h-4" />
+              <div className="w-1 h-1 rounded-full bg-white/50"></div>
+              <Shield className="w-4 h-4" />
+              <div className="w-1 h-1 rounded-full bg-white/50"></div>
+              <Activity className="w-4 h-4" />
             </div>
           </div>
         </motion.footer>

@@ -1,0 +1,122 @@
+/* content.css - Styling for LUMINA Extension UI */
+
+#lumina-toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000000;
+    padding: 12px 20px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: none;
+    transition: all 0.3s ease;
+}
+
+.lumina-toast-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.lumina-toast-icon {
+    font-size: 18px;
+}
+
+.lumina-toast-message {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.lumina-floating-card {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 320px;
+    z-index: 10000001;
+    background: white;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    animation: lumina-slide-in 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes lumina-slide-in {
+    from { transform: translateX(100%) scale(0.9); opacity: 0; }
+    to { transform: translateX(0) scale(1); opacity: 1; }
+}
+
+.lumina-card-header {
+    padding: 12px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: white;
+}
+
+.lumina-card-title {
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 1px;
+}
+
+.lumina-card-close {
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+.lumina-card-body {
+    padding: 20px;
+}
+
+.lumina-claim-box {
+    font-size: 12px;
+    color: #64748b;
+    font-style: italic;
+    margin-bottom: 12px;
+    line-height: 1.4;
+}
+
+.lumina-verdict-text {
+    font-size: 28px;
+    font-weight: 900;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+}
+
+.lumina-confidence {
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+    margin-bottom: 16px;
+}
+
+.lumina-reasoning {
+    font-size: 13px;
+    color: #334155;
+    line-height: 1.5;
+    margin-bottom: 20px;
+}
+
+.lumina-card-footer a {
+    display: block;
+    text-align: center;
+    padding: 10px;
+    background: #f8fafc;
+    border-radius: 10px;
+    color: #6366f1;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 700;
+    transition: background 0.2s;
+}
+
+.lumina-card-footer a:hover {
+    background: #f1f5f9;
+}

@@ -58,8 +58,16 @@ export const agentResultSchema = z.object({
   evidence_summary: evidenceSummarySchema.optional().catch(undefined),
   weakness_of_claim: text.optional(),
   strongest_point: text.optional(),
-  verdict_hint: text.optional(),
+  verdict_hint: z.enum(['TRUE', 'FALSE', 'MISLEADING', 'UNVERIFIED']).optional().catch(undefined),
   key_context: text.optional(),
+  logical_fallacies: z.array(text).catch([]),
+  debunking_sources: z.array(evidenceSchema).catch([]),
+  caveats: z.array(text).catch([]),
+  partial_support_score: z.coerce.number().min(0).max(100).optional().catch(undefined),
+  domain: text.optional(),
+  consensus_exists: z.boolean().optional().catch(undefined),
+  consensus_summary: text.optional(),
+  crux_of_dispute: text.optional(),
   error: text.optional(),
 });
 
@@ -135,8 +143,27 @@ export function normalizeEvidenceProcessingResult(raw: unknown): EvidenceProcess
 
 export function normalizeJudgeResult(raw: unknown): JudgeResult {
   const parsed = judgeResultSchema.parse(isRecord(raw) ? raw : {});
+
+  // Fix: If model returned confidence in 0-1 range, scale to 0-100
+  let confidence = parsed.confidence_score;
+  if (confidence > 0 && confidence <= 1) {
+    confidence = Math.round(confidence * 100);
+  }
+  // Clamp to valid range
+  confidence = Math.min(100, Math.max(0, Math.round(confidence)));
+
+  // Fix: Infer verdict_color if model returned 'grey' (default catch) but verdict is known
+  let verdictColor = parsed.verdict_color;
+  if (verdictColor === 'grey' && parsed.verdict !== 'UNVERIFIED') {
+    verdictColor = parsed.verdict === 'TRUE' ? 'green'
+      : parsed.verdict === 'FALSE' ? 'red'
+      : 'yellow';
+  }
+
   return {
     ...parsed,
+    confidence_score: confidence,
+    verdict_color: verdictColor,
     key_evidence: parsed.key_evidence.filter(Boolean),
   };
 }

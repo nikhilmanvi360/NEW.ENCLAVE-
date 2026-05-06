@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 export type Verdict = 'True' | 'False' | 'Partially True' | 'Insufficient Evidence';
 
 export interface FactCheckResponse {

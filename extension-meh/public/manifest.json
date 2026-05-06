@@ -1,17 +1,30 @@
 {
   "manifest_version": 3,
-  "name": "Fact Check AI",
-  "version": "1.0",
-  "description": "Real-time AI fact-checking engine.",
+  "name": "LUMINA — Truth Engine",
+  "version": "2.0.0",
+  "description": "Premium multi-agent forensic fact-checking for the modern web.",
   "action": {
     "default_popup": "index.html",
-    "default_title": "Fact Check Text"
+    "default_title": "Lumina Analysis"
   },
   "permissions": [
-    "activeTab"
+    "activeTab",
+    "storage",
+    "contextMenus"
   ],
   "host_permissions": [
-    "http://*/*",
+    "http://localhost:3000/*",
     "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
   ]
 }
