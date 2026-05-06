@@ -1,5 +1,5 @@
 {
-  "name": "Multi-Agent Truth Engine",
+  "name": "Lumina",
   "description": "A fact-checking system where multiple specialized AI agents debate claims using live web search before a central Judge delivers a verdict.",
   "requestFramePermissions": [],
   "majorCapabilities": []

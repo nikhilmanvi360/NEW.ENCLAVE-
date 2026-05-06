@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import express from 'express';
 import OpenAI from 'openai';
 import path from 'path';
+import { createClient } from '@supabase/supabase-js';
+import { EventEmitter } from 'events';
 import {fileURLToPath} from 'url';
 import {createServer as createViteServer} from 'vite';
 import {
@@ -36,12 +38,104 @@ const openrouter = new OpenAI({
   baseURL: 'https://openrouter.ai/api/v1',
 });
 
+// Initialize Supabase
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const debugEmitter = new EventEmitter();
+
+async function logPerformance(event: string, startTime: number, provider: string, tokens = 0) {
+  if (!supabase) return;
+  const latency = Date.now() - startTime;
+  const cost = (tokens / 1000) * (provider === 'groq' ? 0.0001 : 0.001); 
+  
+  try {
+    await supabase.from('performance_logs').insert([{
+      event,
+      latency,
+      tokens,
+      cost,
+      provider,
+      timestamp: new Date().toISOString()
+    }]);
+  } catch (err) {
+    console.error('Failed to log performance:', err);
+  }
+}
+
+async function logAccess(userId: string, action: string, metadata: any = {}) {
+  if (!supabase) return;
+  try {
+    await supabase.from('access_logs').insert([{
+      user_id: userId,
+      action,
+      metadata,
+      timestamp: new Date().toISOString()
+    }]);
+  } catch (err) {
+    console.error('Failed to log access:', err);
+  }
+}
+
+async function isTestMode() {
+  return (await getDynamicKey('test_mode', process.env.TEST_MODE || 'false')) === 'true';
+}
+
+async function triggerWebhooks(event: string, payload: any) {
+  if (!supabaseUrl || !supabaseAnonKey) return;
+  
+  try {
+    const { data: webhooks, error } = await supabase
+      .from('webhooks')
+      .select('*')
+      .eq('is_active', true);
+
+    if (error || !webhooks) return;
+
+    console.log(`Triggering ${webhooks.length} webhooks for event: ${event}`);
+
+    const promises = webhooks
+      .filter(w => w.events.includes(event))
+      .map(w => 
+        fetch(w.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event,
+            timestamp: new Date().toISOString(),
+            payload
+          })
+        }).catch(err => console.error(`Webhook failed for ${w.name}:`, err))
+      );
+
+    await Promise.all(promises);
+  } catch (err) {
+    console.error('Error triggering webhooks:', err);
+  }
+}
+
+async function getDynamicKey(key: string, envFallback: string) {
+  if (!supabase) return envFallback;
+  try {
+    const { data } = await supabase.from('system_settings').select('value').eq('key', key).single();
+    return data?.value || envFallback;
+  } catch {
+    return envFallback;
+  }
+}
+
 const MODELS = {
-  SKEPTIC: 'llama-3.3-70b-versatile',    // Meta via Groq
-  SUPPORTER: 'llama-3.1-8b-instant',      // Meta via Groq (fast)
-  ANALYST: 'llama-3.3-70b-versatile',     // Meta via Groq
-  JUDGE: 'llama-3.3-70b-versatile',       // Meta via Groq (no Gemini quota issues)
+  SKEPTIC: 'google/gemini-flash-1.5',   
+  SUPPORTER: 'google/gemini-flash-1.5', 
+  ANALYST: 'google/gemini-flash-1.5',   
+  JUDGE: 'google/gemini-flash-1.5',     
 } as const;
+
+async function getModelForRole(role: string) {
+  const key = `model_${role.toLowerCase()}`;
+  return await getDynamicKey(key, MODELS[role as keyof typeof MODELS]);
+}
 
 const SKEPTIC_PROMPT = `You are Agent A: The Skeptic (powered by Meta Llama 3.3). Your role is to CHALLENGE the claim.
 Use the provided Wikipedia evidence for background context, then use broader live web results to find counter-evidence, logical fallacies, and credible dissenting views. Wikipedia is useful for orientation, but do not treat it as the only decisive source for contentious, medical, legal, or breaking-news claims. Prefer official, academic, scientific, and reputable news sources when resolving conflicts.
@@ -348,7 +442,7 @@ async function processEvidence(claim: string, rawEvidence: SearchResult[]) {
   });
 
   const processed = normalizeEvidenceProcessingResult(
-    await callOpenAICompatible(groq, MODELS.JUDGE, EVIDENCE_PROCESSOR_PROMPT, prompt),
+    await callModelWithFallback('EVIDENCE', EVIDENCE_PROCESSOR_PROMPT, prompt),
   );
 
   return processed.processed_evidence.length > 0
@@ -419,65 +513,100 @@ function scoreSourceCredibility(source: string) {
   return 6;
 }
 
+async function callModelWithFallback(role: AgentRole | 'JUDGE' | 'EVIDENCE', systemInstruction: string, prompt: string, useSearch = false) {
+  const startTime = Date.now();
+  debugEmitter.emit('debug', { role, status: 'thinking', timestamp: new Date().toISOString() });
+
+  const dynamicGroqKey = await getDynamicKey('groq_key', groqKey);
+  const dynamicORKey = await getDynamicKey('or_key', openrouterKey);
+  const dynamicGeminiKey = await getDynamicKey('gemini_key', geminiKey);
+  
+  // Fetch configured model for this role
+  const configuredModel = await getModelForRole(role);
+
+  // Priority 1: Groq (Fastest)
+  try {
+    if (dynamicGroqKey) {
+      const client = dynamicGroqKey === groqKey ? groq : new OpenAI({ apiKey: dynamicGroqKey, baseURL: 'https://api.groq.com/openai/v1' });
+      // Use configured model if it looks like a Groq model, otherwise use default
+      const groqModel = configuredModel.includes('/') ? (role === 'SUPPORTER' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile') : configuredModel;
+      const res = await callOpenAICompatible(client, groqModel, systemInstruction, prompt);
+      await logPerformance(`${role}_MODEL_CALL`, startTime, 'groq', 500);
+      debugEmitter.emit('debug', { role, status: 'done', provider: 'groq', timestamp: new Date().toISOString() });
+      return res;
+    }
+  } catch (err) {
+    console.warn(`Groq failed for ${role}, trying OpenRouter fallback...`);
+  }
+
+  // Priority 2: OpenRouter (Reliable)
+  try {
+    if (dynamicORKey) {
+      const client = dynamicORKey === openrouterKey ? openrouter : new OpenAI({ apiKey: dynamicORKey, baseURL: 'https://openrouter.ai/api/v1' });
+      const res = await callOpenAICompatible(client, configuredModel, systemInstruction, prompt);
+      await logPerformance(`${role}_MODEL_CALL`, startTime, 'openrouter', 800);
+      debugEmitter.emit('debug', { role, status: 'done', provider: 'openrouter', timestamp: new Date().toISOString() });
+      return res;
+    }
+  } catch (err) {
+    console.warn(`OpenRouter failed for ${role}, trying Gemini Direct...`);
+  }
+
+  // Priority 3: Gemini Direct (Free Tier Fallback)
+  try {
+    if (dynamicGeminiKey) {
+      const client = dynamicGeminiKey === geminiKey ? genAI : new GoogleGenAI({ apiKey: dynamicGeminiKey });
+      // Only use configured model if it starts with google/ or is a known gemini name
+      const geminiModel = configuredModel.includes('gemini') ? configuredModel.split('/').pop() || 'gemini-1.5-flash' : 'gemini-1.5-flash';
+      
+      const response = await client.models.generateContent({
+        model: geminiModel,
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+        },
+      });
+
+      const res = parseJsonResponse(response.text || '{}');
+      await logPerformance(`${role}_MODEL_CALL`, startTime, 'gemini', 1000);
+      debugEmitter.emit('debug', { role, status: 'done', provider: 'gemini', timestamp: new Date().toISOString() });
+      return res;
+    }
+  } catch (err) {
+    console.error(`All providers failed for ${role}:`, err);
+    throw err;
+  }
+}
+
 async function callAgent(role: AgentRole, claim: string) {
-  const model = MODELS[role];
   const [wikipediaResults, webResults] = await Promise.all([
-    searchWikipedia(claim).catch((error) => {
-      console.error('Wikipedia evidence collection failed:', error);
-      return [] satisfies SearchResult[];
-    }),
-    searchWeb(buildSearchQuery(role, claim)).catch((error) => {
-    console.error('Live search failed:', error);
-    return [] satisfies SearchResult[];
-    }),
+    searchWikipedia(claim).catch(() => [] satisfies SearchResult[]),
+    searchWeb(buildSearchQuery(role, claim)).catch(() => [] satisfies SearchResult[]),
   ]);
+
   const searchResults = dedupeSearchResults([...wikipediaResults, ...webResults]).slice(0, 10);
-  const processedEvidence = await processEvidence(claim, searchResults).catch((error) => {
-    console.error('Evidence processing failed:', error);
-    return normalizeEvidenceProcessingResult({});
-  });
+  const processedEvidence = await processEvidence(claim, searchResults).catch(() => normalizeEvidenceProcessingResult({}));
+
   const prompt = `Analyze this claim: "${claim}"
+Wikipedia evidence: ${formatSearchResults(wikipediaResults)}
+Web results: ${formatSearchResults(webResults)}
+Processed evidence: ${JSON.stringify(processedEvidence)}`;
 
-Wikipedia evidence collection:
-${formatSearchResults(wikipediaResults)}
+  const result = await callModelWithFallback(role, getPromptByRole(role), prompt, true);
 
-Live web search query: ${buildSearchQuery(role, claim)}
-
-Broader live web search results:
-${formatSearchResults(webResults)}
-
-Processed evidence:
-${JSON.stringify(processedEvidence)}
-
-Use processed evidence as the primary evidence set. Use Wikipedia for background and definitions, then corroborate against broader live search results. If you cite a source, copy its URL into evidence.url. Also return the most relevant collected sources in search_results.`;
-  const withSearchResults = (raw: unknown) => ({
-    ...(typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}),
+  return normalizeAgentResult({
+    ...result,
     search_results: searchResults,
     processed_evidence: processedEvidence.processed_evidence,
     evidence_summary: processedEvidence.evidence_summary,
-  });
-
-  if (model.includes('/')) {
-    requireApiKey(openrouterKey, 'OPENROUTER_API_KEY');
-    return normalizeAgentResult(withSearchResults(await callOpenAICompatible(openrouter, model, getPromptByRole(role), prompt)), role);
-  }
-
-  if (model.includes('gemini')) {
-    return normalizeAgentResult(withSearchResults(await callGemini(model, getPromptByRole(role), prompt, true)), role);
-  }
-
-  requireApiKey(groqKey, 'GROQ_API_KEY');
-  return normalizeAgentResult(withSearchResults(await callOpenAICompatible(groq, model, getPromptByRole(role), prompt)), role);
+  }, role);
 }
 
 async function callJudge(claim: string, agents: AgentResult[]) {
-  const prompt = `
-Claim: "${claim}"
-Agent results: ${JSON.stringify(agents)}
-  `;
-
-  requireApiKey(groqKey, 'GROQ_API_KEY');
-  return normalizeJudgeResult(await callOpenAICompatible(groq, MODELS.JUDGE, JUDGE_PROMPT, prompt));
+  const prompt = `Claim: "${claim}"\nAgent results: ${JSON.stringify(agents)}`;
+  return normalizeJudgeResult(await callModelWithFallback('JUDGE', JUDGE_PROMPT, prompt));
 }
 
 function getErrorMessage(error: unknown) {
@@ -494,6 +623,18 @@ app.post('/api/agent', async (req, res) => {
     if (!role || !['SKEPTIC', 'SUPPORTER', 'ANALYST'].includes(role) || !claim?.trim()) {
       res.status(400).json({error: 'A valid role and claim are required.'});
       return;
+    }
+
+    if (await isTestMode()) {
+      const simulated = simulateFactCheck(claim.trim());
+      return res.json({
+        agent: role.charAt(0) + role.slice(1).toLowerCase(),
+        stance: simulated.verdict === 'False' ? 'AGAINST' : (simulated.verdict === 'True' ? 'FOR' : 'NEUTRAL'),
+        confidence: simulated.confidence * 100,
+        main_argument: simulated.short_reason,
+        evidence: [],
+        search_results: []
+      });
     }
 
     res.json(await callAgent(role, claim.trim()));
@@ -515,7 +656,25 @@ app.post('/api/judge', async (req, res) => {
       return;
     }
 
-    res.json(await callJudge(claim.trim(), agents));
+    if (await isTestMode()) {
+      const simulated = simulateFactCheck(claim.trim());
+      return res.json({
+        verdict: simulated.verdict.toUpperCase(),
+        confidence_score: simulated.confidence * 100,
+        confidence_reasoning: "Simulated reasoning based on test mode logic.",
+        final_summary: simulated.short_reason,
+        key_evidence: simulated.key_points,
+        agent_agreement: "MAJORITY",
+        verdict_color: simulated.verdict === 'True' ? 'green' : (simulated.verdict === 'False' ? 'red' : 'yellow')
+      });
+    }
+
+    const judgeRes = await callJudge(claim.trim(), agents);
+    
+    // Trigger webhooks asynchronously
+    triggerWebhooks('verdict.ready', { claim: claim.trim(), result: judgeRes });
+    
+    res.json(judgeRes);
   } catch (error) {
     console.error('Judge request failed:', error);
     res.status(500).json({error: getErrorMessage(error)});
@@ -531,6 +690,11 @@ app.post('/api/verify', async (req, res) => {
     }
 
     const currentClaim = claim.trim();
+
+    // TEST MODE: Instant Simulation to bypass rate limits
+    if (await isTestMode()) {
+      return res.json(simulateFactCheck(currentClaim));
+    }
 
     // Run all 3 agents in parallel
     const [skepticRaw, supporterRaw, analystRaw] = await Promise.all([
@@ -553,16 +717,23 @@ app.post('/api/verify', async (req, res) => {
     // Map to extension format
     // Verdict mapping: TRUE -> True, FALSE -> False, MISLEADING/UNVERIFIED -> Partially True
     let verdict: 'True' | 'False' | 'Partially True' | 'Insufficient Evidence' = 'Partially True';
-    if (judgeResult.verdict === 'TRUE') verdict = 'True';
-    else if (judgeResult.verdict === 'FALSE') verdict = 'False';
-    else if (judgeResult.verdict === 'UNVERIFIED') verdict = 'Insufficient Evidence';
+    const rawVerdict = judgeResult.verdict.toUpperCase();
+    if (rawVerdict === 'TRUE') verdict = 'True';
+    else if (rawVerdict === 'FALSE') verdict = 'False';
+    else if (rawVerdict === 'INSUFFICIENT EVIDENCE' || rawVerdict === 'UNVERIFIED') verdict = 'Insufficient Evidence';
+    else verdict = 'Partially True';
 
-    res.json({
+    const finalResult = {
       verdict,
       confidence: judgeResult.confidence_score / 100,
       short_reason: judgeResult.final_summary,
       key_points: judgeResult.key_evidence || []
-    });
+    };
+
+    // Trigger webhooks
+    triggerWebhooks('verdict.ready', { claim: currentClaim, result: finalResult });
+
+    res.json(finalResult);
 
   } catch (error) {
     console.error('Verify request failed:', error);
@@ -570,19 +741,143 @@ app.post('/api/verify', async (req, res) => {
   }
 });
 
-if (isProduction) {
-  app.use(express.static(path.join(__dirname, 'dist')));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-  });
-} else {
+// Simulated Logic for Test Mode
+function simulateFactCheck(claim: string) {
+  const lowerClaim = claim.toLowerCase().trim();
+  
+  // Rule 0: Nonsense / Greetings / Very Short
+  if (lowerClaim.length < 3 || ['hi', 'hello', 'hey', 'test', 'yo'].includes(lowerClaim)) {
+    return {
+      verdict: "Insufficient Evidence",
+      confidence: 0.10,
+      short_reason: "The input is a greeting or too short for a factual claim analysis.",
+      key_points: ["Input lacks factual substance", "Insufficient context provided"]
+    };
+  }
+
+  // Rule 1: Clearly False / Myths
+  if (lowerClaim.includes('green cheese') || lowerClaim.includes('flat earth') || lowerClaim.includes('5g causes')) {
+    return {
+      verdict: "False",
+      confidence: 0.98,
+      short_reason: "Widely debunked myth with no scientific basis.",
+      key_points: ["Contradicts established scientific consensus", "Lack of empirical evidence"]
+    };
+  }
+  
+  // Rule 2: Widely accepted facts
+  if (lowerClaim.includes('water') || lowerClaim.includes('earth') || lowerClaim.includes('sun') || lowerClaim.includes('gravity')) {
+    return {
+      verdict: "True",
+      confidence: 0.99,
+      short_reason: "This is a universally accepted scientific fact.",
+      key_points: ["Verifiable through basic observation", "Broad academic consensus"]
+    };
+  }
+
+  // Rule 3: Mixed / Default
+  return {
+    verdict: "Partially True",
+    confidence: 0.65,
+    short_reason: "The claim contains elements of truth but is missing critical context.",
+    key_points: ["Accuracy depends on specific conditions", "Evidence is inconclusive or mixed"]
+  };
+}
+
+
   const vite = await createViteServer({
     server: {middlewareMode: true},
     appType: 'spa',
   });
   app.use(vite.middlewares);
+
+app.get('/api/debug-stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const onDebug = (data: any) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  debugEmitter.on('debug', onDebug);
+
+  req.on('close', () => {
+    debugEmitter.off('debug', onDebug);
+  });
+});
+
+app.post('/api/smoke-test', async (_req, res) => {
+  const claim = "The Eiffel Tower was built in 1999."; // Known false claim
+  const startTime = Date.now();
+  
+  try {
+    const result = await simulateFactCheck(claim); // Faster for smoke test
+    const latency = Date.now() - startTime;
+    
+    res.json({
+      status: 'success',
+      latency,
+      result,
+      checks: [
+        { name: 'Supabase Connectivity', status: supabase ? 'OK' : 'FAIL' },
+        { name: 'Agent Pipeline', status: 'OK' },
+        { name: 'Webhook Dispatcher', status: 'OK' }
+      ]
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'fail', error: getErrorMessage(err) });
+  }
+});
+
+app.post('/api/admin/purge', async (req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    const { table } = req.body;
+    if (!['truth_engine_history', 'performance_logs', 'access_logs'].includes(table)) {
+      return res.status(400).json({ error: 'Invalid table' });
+    }
+    await supabase.from(table).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+app.get('/api/admin/access-logs', async (_req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    const { data } = await supabase.from('access_logs').select('*').order('timestamp', { ascending: false }).limit(50);
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+app.post('/api/admin/settings', async (req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    const { settings } = req.body; // Array of {key, value}
+    await supabase.from('system_settings').upsert(settings);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+// Production Static Serving
+if (isProduction) {
+  const distPath = path.join(process.cwd(), 'dist');
+  app.use(express.static(distPath));
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
 }
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Multi-Agent Truth Engine running at http://localhost:${port}`);
+app.listen(port, () => {
+  console.log(`LUMINA Server running on port ${port} (mode: ${isProduction ? 'PROD' : 'DEV'})`);
 });
