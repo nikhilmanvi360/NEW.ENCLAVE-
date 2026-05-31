@@ -28,11 +28,22 @@ type HistoryEntry = {
 };
 
 const historyStorageKey = 'truth-engine-history-v1';
-const agentOrder: Array<{key: AgentKey; role: 'SKEPTIC' | 'SUPPORTER' | 'ANALYST'}> = [
-  {key: 'skeptic', role: 'SKEPTIC'},
-  {key: 'supporter', role: 'SUPPORTER'},
-  {key: 'analyst', role: 'ANALYST'},
+const agentOrder: Array<{ key: AgentKey; role: 'SKEPTIC' | 'SUPPORTER' | 'ANALYST' }> = [
+  { key: 'skeptic', role: 'SKEPTIC' },
+  { key: 'supporter', role: 'SUPPORTER' },
+  { key: 'analyst', role: 'ANALYST' },
 ];
+
+async function getAccessToken() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token || null;
+}
+
+async function getAuthHeaders() {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 const PLANS = [
   {
@@ -113,11 +124,10 @@ function PricingPage({ onUpgrade }: { onUpgrade: (planId: string) => void }) {
             <button
               key={p.id}
               onClick={() => setSelected(p.id)}
-              className={`relative px-8 py-3 rounded-2xl font-bold text-sm transition-all duration-300 ${
-                selected === p.id
+              className={`relative px-8 py-3 rounded-2xl font-bold text-sm transition-all duration-300 ${selected === p.id
                   ? 'bg-white text-slate-900 shadow-xl shadow-white/10'
                   : 'bg-white/5 text-slate-400 hover:bg-white/10 border border-white/10'
-              }`}
+                }`}
             >
               {p.badge && (
                 <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white text-[9px] font-bold rounded-full uppercase tracking-wider whitespace-nowrap">
@@ -335,7 +345,7 @@ function CheckoutModal({ onClose, onComplete, planId }: { onClose: () => void, o
           </div>
         )}
       </motion.div>
-      </div>
+    </div>
   );
 }
 
@@ -406,7 +416,7 @@ export default function App() {
         } catch (err) { console.error('Local history load failed', err); }
         return;
       }
-      
+
       try {
         const { data, error } = await supabase
           .from('truth_engine_history')
@@ -414,7 +424,7 @@ export default function App() {
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(20);
-            
+
         if (!error && data && data.length > 0) {
           const formattedHistory = data.map(row => ({
             id: row.id,
@@ -440,8 +450,8 @@ export default function App() {
   const downloadReport = async () => {
     if (!reportRef.current) return;
     try {
-      const canvas = await html2canvas(reportRef.current, { 
-        scale: 2, 
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 2,
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff'
@@ -468,7 +478,7 @@ export default function App() {
     const originalClaim = claim.trim();
     // Inject domain and input mode context into the claim for the AI
     const enrichedClaim = `[Domain Context: ${domain}] [Input Type: ${inputMode.toUpperCase()}]\nClaim to verify: ${originalClaim}`;
-    
+
     setUiState('analyzing');
     setAgentProgress({ skeptic: 'loading', supporter: 'loading', analyst: 'loading', judge: 'pending' });
     setAgentResults(null);
@@ -491,10 +501,12 @@ export default function App() {
     }
 
     try {
-      const agentPromises = agentOrder.map(({key, role}) => (
-        callAgent(role, enrichedClaim, user?.id)
+      const agentPromises = agentOrder.map(({ key, role }) => (
+        callAgent(role, enrichedClaim)
           .then((result) => {
-            setAgentProgress(prev => ({ ...prev, [key]: 'done' }));
+            // Server now returns FAILED stance gracefully instead of throwing 500
+            const isFailed = result.stance === 'FAILED' || Boolean(result.error);
+            setAgentProgress(prev => ({ ...prev, [key]: isFailed ? 'error' : 'done' }));
             return result;
           })
           .catch((err) => {
@@ -504,12 +516,15 @@ export default function App() {
       ));
 
       const [skepticRes, supporterRes, analystRes] = await Promise.all(agentPromises);
-      const successfulAgents = [skepticRes, supporterRes, analystRes].filter(result => !result.error);
+      // Filter out truly failed agents (FAILED stance = server-side error)
+      const successfulAgents = [skepticRes, supporterRes, analystRes].filter(
+        result => result.stance !== 'FAILED' && !result.error
+      );
 
-      if (successfulAgents.length < 2) {
-        throw new Error('At least two agents must complete before the judge can produce a verdict.');
+      if (successfulAgents.length < 1) {
+        throw new Error('All agents failed to respond. Please check your API keys and try again.');
       }
-      
+
       const settledAgentResults = {
         skeptic: skepticRes,
         supporter: supporterRes,
@@ -519,7 +534,7 @@ export default function App() {
       setAgentResults(settledAgentResults);
 
       setUiState('agents_done');
-      
+
       // Animate timeline steps
       setTimelineStep(1);
       await new Promise(r => setTimeout(r, 2500));
@@ -531,8 +546,8 @@ export default function App() {
       setUiState('judging');
       setAgentProgress(prev => ({ ...prev, judge: 'loading' }));
 
-      const judgeRes = await callJudge(enrichedClaim, successfulAgents, user?.id);
-      
+      const judgeRes = await callJudge(enrichedClaim, successfulAgents);
+
       setJudgeResult(judgeRes);
       setAgentProgress(prev => ({ ...prev, judge: 'done' }));
       setUiState('verdict_ready');
@@ -619,7 +634,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-indigo-100 relative overflow-x-hidden">
       {!isSubscribed && <UpgradeBanner onUpgrade={() => setPageView('pricing')} />}
-      
+
       <header className="bg-white/80 backdrop-blur-xl border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           {/* ZONE 1: LOGO */}
@@ -646,11 +661,10 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setPageView(tab.id as PageView)}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${
-                  pageView === tab.id 
-                    ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' 
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${pageView === tab.id
+                    ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50'
                     : 'text-slate-500 hover:text-slate-900 hover:bg-white/50'
-                }`}
+                  }`}
               >
                 {tab.icon}
                 {tab.label}
@@ -660,11 +674,10 @@ export default function App() {
           {/* Radar PRO nav item */}
           <button
             onClick={() => setPageView('radar')}
-            className={`hidden lg:flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold transition-all ml-1 ${
-              pageView === 'radar'
+            className={`hidden lg:flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold transition-all ml-1 ${pageView === 'radar'
                 ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
                 : 'bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-600 border border-indigo-200 hover:border-indigo-400'
-            }`}
+              }`}
           >
             <Activity className="w-4 h-4" />
             Radar
@@ -679,7 +692,7 @@ export default function App() {
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active Session</p>
                   <p className="text-xs font-bold text-slate-700 truncate max-w-[150px]">{user.email}</p>
                 </div>
-                <button 
+                <button
                   onClick={async () => { await supabase?.auth.signOut(); setUser(null); }}
                   className="w-10 h-10 flex items-center justify-center bg-slate-100 text-slate-500 rounded-xl hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95"
                   title="Sign Out"
@@ -688,14 +701,14 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <button 
+              <button
                 onClick={() => setShowAuthModal(true)}
                 className="px-6 py-3 bg-slate-900 text-white rounded-xl text-sm font-bold shadow-xl shadow-slate-200 hover:bg-indigo-600 hover:shadow-indigo-100 transition-all active:scale-95"
               >
                 Sign In
               </button>
             )}
-            
+
             {/* Mobile Nav Toggle (Optional fallback) */}
             <button className="lg:hidden p-2 text-slate-500">
               <Settings className="w-6 h-6" />
@@ -705,23 +718,23 @@ export default function App() {
       </header>
       <main className="max-w-6xl mx-auto px-6 py-12 relative z-10">
         {showAuthModal && (
-          <LoginModal 
-            onClose={() => setShowAuthModal(false)} 
-            onSuccess={(u) => { setUser(u); setShowAuthModal(false); }} 
+          <LoginModal
+            onClose={() => setShowAuthModal(false)}
+            onSuccess={(u) => { setUser(u); setShowAuthModal(false); }}
           />
         )}
         {showCheckout && (
-          <CheckoutModal 
+          <CheckoutModal
             planId={selectedPlanId}
-            onClose={() => setShowCheckout(false)} 
+            onClose={() => setShowCheckout(false)}
             onComplete={() => {
               setIsSubscribed(true);
               localStorage.setItem('lumina_premium', 'true');
               setPageView('webhooks');
-            }} 
+            }}
           />
         )}
-        
+
         {pageView === 'history' ? (
           <HistoryPage history={history} onRestore={restoreHistory} onClear={clearHistory} />
         ) : (['analytics', 'review', 'batch', 'webhooks'].includes(pageView) && !isSubscribed) || pageView === 'pricing' ? (
@@ -733,565 +746,562 @@ export default function App() {
         ) : pageView === 'batch' ? (
           <BatchMockPage />
         ) : pageView === 'webhooks' ? (
-          <WebhooksPage isSubscribed={isSubscribed} onUpgrade={() => {}} />
+          <WebhooksPage isSubscribed={isSubscribed} onUpgrade={() => { }} />
         ) : pageView === 'admin' ? (
           user ? <AdminMockPage user={user} onSignOut={async () => { await supabase?.auth.signOut(); setUser(null); }} /> : <AdminLoginPage onLogin={setUser} loading={authLoading} setLoading={setAuthLoading} />
         ) : pageView === 'radar' ? (
           <RadarPage isSubscribed={isSubscribed} onUpgrade={() => setPageView('pricing')} />
         ) : (
-        <>
-        {/* Intro & Input Layer */}
-        <div className="max-w-4xl mx-auto">
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-center mb-12"
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.1 }}
-              className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-bold uppercase tracking-widest mb-6 border border-indigo-100 shadow-sm"
-            >
-              <Sparkles size={12} />
-              AI-Powered Forensic Analysis
-            </motion.div>
-            
-            <h2 className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900">
-              Dissect Truth from <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">Fabrication</span>
-            </h2>
-            
-            <p className="text-lg text-slate-500 max-w-2xl mx-auto leading-relaxed">
-              Our multi-agent system independently researches, debates, and verifies any claim using live global data nodes.
-            </p>
-          </motion.div>
-
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="relative group mb-16"
-          >
-            {/* Soft background glow container for selectors */}
-            <div className="relative z-10 py-8 px-4 rounded-3xl mb-8 flex flex-col items-center gap-6">
-              <div className="absolute inset-0 bg-gradient-to-r from-indigo-100/40 via-purple-100/40 to-pink-100/40 blur-3xl -z-10 rounded-full w-[120%] -left-[10%]"></div>
-              
-              {/* Domain Mode Selection */}
-              <div className="flex flex-wrap justify-center gap-3">
-                {(['GENERAL', 'MEDICAL', 'LEGAL', 'FINANCIAL'] as const).map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setDomain(d)}
-                    className={`px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-[0.15em] transition-all border ${
-                      domain === d 
-                        ? 'bg-[#232145] border-[#232145] text-white shadow-lg shadow-indigo-200/50 scale-105' 
-                        : 'bg-white/40 border-indigo-200/60 text-indigo-400 hover:bg-white/60 hover:text-indigo-500 hover:border-indigo-300 backdrop-blur-sm'
-                    }`}
-                  >
-                    {d} Mode
-                  </button>
-                ))}
-              </div>
-              
-              {/* Input Method Toggle */}
-              <div className="flex justify-center gap-3">
-                <button
-                  onClick={() => setInputMode('text')}
-                  className={`px-6 py-2.5 rounded-full text-sm font-bold transition-all border ${
-                    inputMode === 'text' 
-                      ? 'bg-indigo-100/80 border-indigo-200 text-indigo-600 shadow-sm' 
-                      : 'bg-white/30 border-indigo-100/80 text-indigo-400 hover:bg-white/50 backdrop-blur-sm'
-                  }`}
+          <>
+            {/* Intro & Input Layer */}
+            <div className="max-w-4xl mx-auto">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center mb-12"
+              >
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.1 }}
+                  className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-bold uppercase tracking-widest mb-6 border border-indigo-100 shadow-sm"
                 >
-                  Text Claim
-                </button>
-                <button
-                  onClick={() => setInputMode('media')}
-                  className={`px-6 py-2.5 rounded-full text-sm font-bold transition-all border ${
-                    inputMode === 'media' 
-                      ? 'bg-indigo-100/80 border-indigo-200 text-indigo-600 shadow-sm' 
-                      : 'bg-white/30 border-indigo-100/80 text-indigo-400 hover:bg-white/50 backdrop-blur-sm'
-                  }`}
-                >
-                  Media Upload
-                </button>
-              </div>
-            </div>
+                  <Sparkles size={12} />
+                  AI-Powered Forensic Analysis
+                </motion.div>
 
-            <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-3xl blur opacity-20 group-focus-within:opacity-40 transition duration-1000 group-focus-within:duration-200"></div>
-            
-            {inputMode === 'text' ? (
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-6 flex items-center pointer-events-none">
-                  <Search className="h-6 w-6 text-slate-400 group-focus-within:text-indigo-600 transition-colors" />
-                </div>
-                <input
-                  type="text"
-                  value={claim}
-                  onChange={(e) => setClaim(e.target.value)}
-                  disabled={uiState !== 'idle'}
-                  onKeyDown={(e) => e.key === 'Enter' && uiState === 'idle' && handleAnalyze()}
-                  className="block w-full pl-16 pr-44 py-6 bg-white border border-slate-200 rounded-3xl text-xl shadow-2xl focus:ring-0 focus:border-indigo-500/50 transition-all outline-none placeholder:text-slate-400 font-medium"
-                  placeholder="Enter a claim to verify..."
-                />
-                <button
-                  onClick={handleAnalyze}
-                  disabled={uiState !== 'idle' || !claim.trim()}
-                  className="absolute inset-y-2 right-2 px-8 bg-slate-950 text-white rounded-2xl font-bold hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg active:scale-95 flex items-center gap-2"
-                >
-                  {uiState === 'idle' ? (
-                    <>
-                      Analyze <ArrowRight size={18} />
-                    </>
-                  ) : (
-                    <>
-                      Processing...
-                    </>
-                  )}
-                </button>
-              </div>
-            ) : (
-              <div className="relative bg-white/90 backdrop-blur-md border-2 border-dashed border-indigo-300 rounded-3xl p-12 text-center hover:bg-white transition-colors shadow-2xl cursor-pointer group">
-                 <input 
-                   type="file" 
-                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                   accept="image/*,video/*"
-                   onChange={(e) => {
-                     if (e.target.files?.[0]) {
-                       // Simulate extracting a claim from the uploaded media
-                       setClaim(`[Media Upload: ${e.target.files[0].name}] Analyzing frames and audio transcript...`);
-                       setInputMode('text');
-                     }
-                   }} 
-                 />
-                 <div className="flex justify-center gap-4 mb-6">
-                   <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:-rotate-6 transition-all duration-300 shadow-sm border border-indigo-100">
-                     <UploadCloud className="w-8 h-8 text-indigo-500" />
-                   </div>
-                   <div className="w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-6 transition-all duration-300 shadow-sm border border-purple-100">
-                     <FileVideo className="w-8 h-8 text-purple-500" />
-                   </div>
-                 </div>
-                 <h3 className="text-xl font-bold text-slate-800 mb-2">Upload Media for Deepfake Detection</h3>
-                 <p className="text-slate-500 font-medium">Drag & drop an image or short video here, or click to browse.</p>
-                 <p className="text-xs text-slate-400 mt-4 uppercase tracking-widest font-bold">MP4, MOV, JPG, PNG (Max 50MB)</p>
-              </div>
-            )}
-            {errorMsg && (
-              <p className="mt-4 text-rose-500 font-medium flex items-center justify-center gap-2">
-                <AlertCircle className="w-5 h-5" />
-                {errorMsg}
-              </p>
-            )}
-          </motion.div>
+                <h2 className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900">
+                  Dissect Truth from <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">Fabrication</span>
+                </h2>
 
-          {uiState === 'idle' && (
-            <div className="space-y-20">
-              {/* How it works */}
-              <section>
-                <div className="flex items-center gap-3 mb-8">
-                  <div className="h-px bg-slate-200 flex-1"></div>
-                  <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400">The Orchestration Flow</h3>
-                  <div className="h-px bg-slate-200 flex-1"></div>
-                </div>
+                <p className="text-lg text-slate-500 max-w-2xl mx-auto leading-relaxed">
+                  Our multi-agent system independently researches, debates, and verifies any claim using live global data nodes.
+                </p>
+              </motion.div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                  {[
-                    { icon: Globe2, title: "Global Retrieval", desc: "We scan Wikipedia, academic papers, and live news feeds to gather raw evidence." },
-                    { icon: BrainCircuit, title: "Multi-Agent Debate", desc: "Specialized agents challenge and defend the claim to eliminate bias." },
-                    { icon: Scale, title: "Judicial Verdict", desc: "A neutral judge weighs all arguments to deliver a final forensic verdict." }
-                  ].map((item, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.3 + (i * 0.1) }}
-                      className="p-6 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-xl hover:border-indigo-100 transition-all group"
-                    >
-                      <div className="w-12 h-12 rounded-xl bg-slate-50 flex items-center justify-center mb-4 group-hover:bg-indigo-50 transition-colors">
-                        <item.icon className="w-6 h-6 text-slate-400 group-hover:text-indigo-600 transition-colors" />
-                      </div>
-                      <h4 className="font-bold text-slate-800 mb-2">{item.title}</h4>
-                      <p className="text-sm text-slate-500 leading-relaxed">{item.desc}</p>
-                    </motion.div>
-                  ))}
-                </div>
-              </section>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="relative group mb-16"
+              >
+                {/* Soft background glow container for selectors */}
+                <div className="relative z-10 py-8 px-4 rounded-3xl mb-8 flex flex-col items-center gap-6">
+                  <div className="absolute inset-0 bg-gradient-to-r from-indigo-100/40 via-purple-100/40 to-pink-100/40 blur-3xl -z-10 rounded-full w-[120%] -left-[10%]"></div>
 
-              {/* Trending Claims */}
-              <section className="pb-12">
-                 <div className="flex items-center justify-between mb-8">
-                    <h3 className="text-xl font-bold text-slate-800">Trending Queries</h3>
-                    <div className="flex gap-2">
-                       <button className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"><ArrowRight size={16} className="rotate-180"/></button>
-                       <button className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"><ArrowRight size={16}/></button>
-                    </div>
-                 </div>
-                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {[
-                      "5G technology and health impacts",
-                      "Historical accuracy of Apollo 11",
-                      "Global temperature trends 2024",
-                      "Impact of microplastics on sea life"
-                    ].map((t, i) => (
+                  {/* Domain Mode Selection */}
+                  <div className="flex flex-wrap justify-center gap-3">
+                    {(['GENERAL', 'MEDICAL', 'LEGAL', 'FINANCIAL'] as const).map((d) => (
                       <button
-                        key={i}
-                        onClick={() => setClaim(t)}
-                        className="p-4 text-left bg-slate-50 border border-slate-100 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 transition-all text-sm font-medium text-slate-600 flex items-center justify-between group"
+                        key={d}
+                        onClick={() => setDomain(d)}
+                        className={`px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-[0.15em] transition-all border ${domain === d
+                            ? 'bg-[#232145] border-[#232145] text-white shadow-lg shadow-indigo-200/50 scale-105'
+                            : 'bg-white/40 border-indigo-200/60 text-indigo-400 hover:bg-white/60 hover:text-indigo-500 hover:border-indigo-300 backdrop-blur-sm'
+                          }`}
                       >
-                        {t}
-                        <ArrowRight size={14} className="opacity-0 group-hover:opacity-100 transition-opacity text-indigo-600" />
+                        {d} Mode
                       </button>
                     ))}
-                 </div>
-              </section>
-            </div>
-          )}
-        </div>
+                  </div>
 
-        {/* Agents & Timeline Area */}
-        <AnimatePresence mode="wait">
-          {uiState === 'analyzing' && (
-            <motion.div 
-              key="grid"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.3 }}
-              className="mt-16"
-            >
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                
-                {/* Agent A: Skeptic */}
-                <AgentCard 
-                  title="The Skeptic" 
-                  role="Agent A (Meta Llama 3.3)"
-                  icon={<ShieldAlert className="w-6 h-6 text-rose-500" />}
-                  colorClass="border-rose-200 bg-rose-50/50"
-                  headerColor="text-rose-700"
-                  progress={agentProgress.skeptic}
-                  thinkingMessages={["Scanning for logical fallacies...", "Searching counter-evidence...", "Analyzing rhetoric..."]}
-                />
+                  {/* Input Method Toggle */}
+                  <div className="flex justify-center gap-3">
+                    <button
+                      onClick={() => setInputMode('text')}
+                      className={`px-6 py-2.5 rounded-full text-sm font-bold transition-all border ${inputMode === 'text'
+                          ? 'bg-indigo-100/80 border-indigo-200 text-indigo-600 shadow-sm'
+                          : 'bg-white/30 border-indigo-100/80 text-indigo-400 hover:bg-white/50 backdrop-blur-sm'
+                        }`}
+                    >
+                      Text Claim
+                    </button>
+                    <button
+                      onClick={() => setInputMode('media')}
+                      className={`px-6 py-2.5 rounded-full text-sm font-bold transition-all border ${inputMode === 'media'
+                          ? 'bg-indigo-100/80 border-indigo-200 text-indigo-600 shadow-sm'
+                          : 'bg-white/30 border-indigo-100/80 text-indigo-400 hover:bg-white/50 backdrop-blur-sm'
+                        }`}
+                    >
+                      Media Upload
+                    </button>
+                  </div>
+                </div>
 
-                {/* Agent C: Analyst */}
-                <AgentCard 
-                  title="The Analyst" 
-                  role="Agent C (Google via OpenRouter)"
-                  icon={<Search className="w-6 h-6 text-blue-500" />}
-                  colorClass="border-blue-200 bg-blue-50/50"
-                  headerColor="text-blue-700"
-                  progress={agentProgress.analyst}
-                  thinkingMessages={["Cross-referencing dates...", "Checking statistical data...", "Consulting scientific consensus..."]}
-                />
+                <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-3xl blur opacity-20 group-focus-within:opacity-40 transition duration-1000 group-focus-within:duration-200"></div>
 
-                {/* Agent B: Supporter */}
-                <AgentCard 
-                  title="The Supporter" 
-                  role="Agent B (Meta Llama 3.1)"
-                  icon={<CheckCircle className="w-6 h-6 text-emerald-500" />}
-                  colorClass="border-emerald-200 bg-emerald-50/50"
-                  headerColor="text-emerald-700"
-                  progress={agentProgress.supporter}
-                  thinkingMessages={["Searching supporting context...", "Finding validating sources...", "Strengthening arguments..."]}
-                />
-              </div>
-              
-              {/* Ticker Tape */}
-              <div className="w-full max-w-4xl mx-auto mt-8 overflow-hidden bg-white rounded-xl border border-slate-200 py-3 shadow-sm relative">
-                <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-white to-transparent z-10 pointer-events-none"></div>
-                <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-white to-transparent z-10 pointer-events-none"></div>
-                <motion.div 
-                  animate={{ x: [600, -1000] }}
-                  transition={{ repeat: Infinity, duration: 20, ease: "linear" }}
-                  className="whitespace-nowrap flex gap-12 text-xs font-mono font-medium text-slate-500"
-                >
-                  <span className="text-rose-600">[SKEPTIC] Interrogating logical fallacies...</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="text-emerald-600">[SUPPORTER] Cross-referencing credible sources...</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="text-blue-600">[ANALYST] Fact-checking statistical data...</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="text-slate-700">[SYSTEM] Connecting to Live Search nodes...</span>
-                </motion.div>
-              </div>
-            </motion.div>
-          )}
-
-          {(uiState === 'agents_done' || uiState === 'judging' || uiState === 'verdict_ready') && agentResults && (
-            <motion.div 
-              key="timeline"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="max-w-4xl mx-auto mt-12 space-y-8"
-            >
-              <h3 className="text-xl font-bold tracking-tight text-slate-800 text-center mb-8">Debate Timeline</h3>
-              
-              <AnimatePresence>
-                {timelineStep >= 1 && (
-                  <TimelineMessage 
-                    key="timeline-step-1"
-                    role="Agent B The Supporter" 
-                    title="Defending the claim"
-                    icon={<CheckCircle className="w-5 h-5 text-emerald-500" />}
-                    colorClass="bg-emerald-50 border-emerald-200 text-emerald-800"
-                    result={agentResults.supporter}
-                    delay={0}
-                  />
-                )}
-                {timelineStep >= 2 && (
-                  <TimelineMessage 
-                    key="timeline-step-2"
-                    role="Agent A The Skeptic" 
-                    title="Presenting Counter Argument"
-                    icon={<ShieldAlert className="w-5 h-5 text-rose-500" />}
-                    colorClass="bg-rose-50 border-rose-200 text-rose-800"
-                    result={agentResults.skeptic}
-                    delay={0}
-                  />
-                )}
-                {timelineStep >= 3 && (
-                  <TimelineMessage 
-                    key="timeline-step-3"
-                    role="Agent C The Analyst" 
-                    title="Objective Findings"
-                    icon={<Search className="w-5 h-5 text-blue-500" />}
-                    colorClass="bg-blue-50 border-blue-200 text-blue-800"
-                    result={agentResults.analyst}
-                    delay={0}
-                  />
-                )}
-              </AnimatePresence>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Judge Area */}
-        <AnimatePresence>
-          {(uiState === 'judging' || uiState === 'verdict_ready') && (
-            <motion.div 
-              initial={{ opacity: 0, y: 50 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="mt-12 max-w-4xl mx-auto"
-            >
-              <div className="relative">
-                {/* Connecting Line */}
-                <div className="absolute -top-12 left-1/2 w-px h-12 bg-slate-300 transform -translate-x-1/2"></div>
-                
-                <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden relative">
-                  
-                  {uiState === 'judging' && (
-                    <div className="p-16 text-center flex flex-col items-center justify-center bg-white relative overflow-hidden">
-                      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
-                      
-                      <div className="relative mb-8">
-                        <div className="w-24 h-24 rounded-full bg-indigo-50 flex items-center justify-center border border-indigo-100 relative z-10 shadow-sm">
-                          <Scale className="w-10 h-10 text-indigo-600" />
-                        </div>
-                        {/* Radar sweep effect */}
-                        <div className="absolute inset-0 rounded-full border border-indigo-200 animate-[spin_4s_linear_infinite] [mask-image:conic-gradient(transparent_50%,black_100%)]"></div>
-                        <div className="absolute inset-[-10px] rounded-full border border-indigo-50/50 animate-[spin_6s_linear_infinite_reverse] [mask-image:conic-gradient(transparent_70%,black_100%)]"></div>
+                {inputMode === 'text' ? (
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-6 flex items-center pointer-events-none">
+                      <Search className="h-6 w-6 text-slate-400 group-focus-within:text-indigo-600 transition-colors" />
+                    </div>
+                    <input
+                      type="text"
+                      value={claim}
+                      onChange={(e) => setClaim(e.target.value)}
+                      disabled={uiState !== 'idle'}
+                      onKeyDown={(e) => e.key === 'Enter' && uiState === 'idle' && handleAnalyze()}
+                      className="block w-full pl-16 pr-44 py-6 bg-white border border-slate-200 rounded-3xl text-xl shadow-2xl focus:ring-0 focus:border-indigo-500/50 transition-all outline-none placeholder:text-slate-400 font-medium"
+                      placeholder="Enter a claim to verify..."
+                    />
+                    <button
+                      onClick={handleAnalyze}
+                      disabled={uiState !== 'idle' || !claim.trim()}
+                      className="absolute inset-y-2 right-2 px-8 bg-slate-950 text-white rounded-2xl font-bold hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg active:scale-95 flex items-center gap-2"
+                    >
+                      {uiState === 'idle' ? (
+                        <>
+                          Analyze <ArrowRight size={18} />
+                        </>
+                      ) : (
+                        <>
+                          Processing...
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="relative bg-white/90 backdrop-blur-md border-2 border-dashed border-indigo-300 rounded-3xl p-12 text-center hover:bg-white transition-colors shadow-2xl cursor-pointer group">
+                    <input
+                      type="file"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      accept="image/*,video/*"
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) {
+                          // Simulate extracting a claim from the uploaded media
+                          setClaim(`[Media Upload: ${e.target.files[0].name}] Analyzing frames and audio transcript...`);
+                          setInputMode('text');
+                        }
+                      }}
+                    />
+                    <div className="flex justify-center gap-4 mb-6">
+                      <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:-rotate-6 transition-all duration-300 shadow-sm border border-indigo-100">
+                        <UploadCloud className="w-8 h-8 text-indigo-500" />
                       </div>
-
-                      <h3 className="text-2xl font-bold tracking-tight text-slate-800 mb-3">Final Judicial Evaluation</h3>
-                      <p className="text-slate-500 max-w-md mx-auto mb-10 leading-relaxed font-medium">Synthesizing multi-agent debate, weighing source credibility, and cross-referencing consensus data...</p>
-                      
-                      <div className="w-full max-w-md h-1.5 bg-slate-100 rounded-full overflow-hidden shadow-inner">
-                        <motion.div 
-                          className="h-full bg-indigo-500 rounded-full relative"
-                          initial={{ width: "0%" }}
-                          animate={{ width: "100%" }}
-                          transition={{ duration: 15, ease: "linear" }}
-                        >
-                          <div className="absolute top-0 right-0 bottom-0 w-20 bg-gradient-to-r from-transparent to-white/50"></div>
-                        </motion.div>
-                      </div>
-                      <div className="mt-8 w-full max-w-lg">
-                         <AnimatedThinking messages={["Reviewing Agent B's sources...", "Verifying Agent A's logical consistency...", "Consulting analytical data...", "Determining confidence score..."]} />
+                      <div className="w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-6 transition-all duration-300 shadow-sm border border-purple-100">
+                        <FileVideo className="w-8 h-8 text-purple-500" />
                       </div>
                     </div>
-                  )}
+                    <h3 className="text-xl font-bold text-slate-800 mb-2">Upload Media for Deepfake Detection</h3>
+                    <p className="text-slate-500 font-medium">Drag & drop an image or short video here, or click to browse.</p>
+                    <p className="text-xs text-slate-400 mt-4 uppercase tracking-widest font-bold">MP4, MOV, JPG, PNG (Max 50MB)</p>
+                  </div>
+                )}
+                {errorMsg && (
+                  <p className="mt-4 text-rose-500 font-medium flex items-center justify-center gap-2">
+                    <AlertCircle className="w-5 h-5" />
+                    {errorMsg}
+                  </p>
+                )}
+              </motion.div>
 
-                  {uiState === 'verdict_ready' && judgeResult && (
-                    <motion.div
-                      initial={{ opacity: 0, filter: 'blur(10px)' }}
-                      animate={{ opacity: 1, filter: 'blur(0px)' }}
-                      transition={{ duration: 0.7 }}
-                    >
-                      {/* Report Card content start */}
-                      <div ref={reportRef} className="bg-slate-50">
-                        {/* Hero Verdict Banner */}
-                        <div className={`px-10 py-16 text-white ${getVerdictBgColor(judgeResult.verdict_color)} flex flex-col items-center justify-center text-center relative overflow-hidden shadow-inner`}>
-                          <div className="absolute inset-0 bg-black/10 mix-blend-overlay"></div>
-                          <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
-                          
-                          {judgeResult.cached && (
-                            <motion.div 
-                              initial={{ opacity: 0, scale: 0.8 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              className="absolute top-8 right-8 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/30 flex items-center gap-2 shadow-lg z-20"
-                            >
-                              <Zap className="w-3.5 h-3.5 text-yellow-300 fill-yellow-300" />
-                              <span className="text-[10px] font-black uppercase tracking-wider text-white">Instant Result</span>
-                            </motion.div>
-                          )}
-                          
-                          <motion.div 
-                            initial={{ scale: 1.5, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            transition={{ type: "spring", bounce: 0.5, delay: 0.2 }}
-                            className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6 shadow-xl border border-white/20 relative z-10"
-                          >
-                            <Scale className="w-10 h-10 text-white" />
-                          </motion.div>
-                          
-                          <motion.h3 
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.4 }}
-                            className="text-xs font-bold uppercase tracking-[0.2em] opacity-80 mb-4 relative z-10"
-                          >
-                            Forensic Verdict
-                          </motion.h3>
-                          
-                          <motion.div 
-                            initial={{ scale: 0.8, opacity: 0, y: 20 }}
-                            animate={{ scale: 1, opacity: 1, y: 0 }}
-                            transition={{ type: "spring", bounce: 0.6, delay: 0.5 }}
-                            className="text-7xl md:text-8xl font-black mb-6 tracking-tighter drop-shadow-xl relative z-10 uppercase"
-                          >
-                            {judgeResult.verdict}
-                          </motion.div>
-                          
-                          <motion.p 
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ delay: 0.8 }}
-                            className="text-xl md:text-2xl font-semibold max-w-3xl opacity-95 text-balance leading-snug relative z-10 drop-shadow-md"
-                          >
-                            {judgeResult.final_summary}
-                          </motion.p>
-                        </div>
+              {uiState === 'idle' && (
+                <div className="space-y-20">
+                  {/* How it works */}
+                  <section>
+                    <div className="flex items-center gap-3 mb-8">
+                      <div className="h-px bg-slate-200 flex-1"></div>
+                      <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400">The Orchestration Flow</h3>
+                      <div className="h-px bg-slate-200 flex-1"></div>
+                    </div>
 
-                      <div className="p-10 md:p-12 grid grid-cols-1 md:grid-cols-2 gap-12 bg-white">
-                        {/* Left Column */}
-                        <div className="space-y-10">
-                          {/* Confidence Score */}
-                          <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 shadow-sm">
-                            <div className="flex items-end justify-between mb-4">
-                              <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest">System Confidence</h4>
-                              <span className={`text-4xl font-black tracking-tighter ${getVerdictTextColor(judgeResult.verdict_color)}`}>
-                                {judgeResult.confidence_score}%
-                              </span>
-                            </div>
-                            <div className="w-full h-4 bg-slate-200 rounded-full overflow-hidden shadow-inner">
-                               <motion.div 
-                                  className={`h-full ${getVerdictBgColor(judgeResult.verdict_color)} relative`}
-                                  initial={{ width: "0%" }}
-                                  animate={{ width: `${judgeResult.confidence_score}%` }}
-                                  transition={{ duration: 1.5, delay: 1, ease: "easeOut" }}
-                               >
-                                 <div className="absolute top-0 right-0 bottom-0 w-10 bg-gradient-to-r from-transparent to-white/30"></div>
-                               </motion.div>
-                            </div>
-                          </div>
-
-                          {/* Reasoning */}
-                          <div>
-                            <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-3">Judicial Reasoning</h4>
-                            <div className="prose prose-slate prose-sm max-w-none text-slate-700 leading-relaxed font-medium">
-                              <p>{judgeResult.confidence_reasoning}</p>
-                            </div>
-                          </div>
-                          
-                          {/* Consensus */}
-                          <div className="pt-8 border-t border-slate-100">
-                            <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-4">Agent Consensus</h4>
-                            <div className="inline-flex items-center px-4 py-2 rounded-xl bg-slate-100 text-slate-800 text-sm font-bold shadow-sm border border-slate-200">
-                              {judgeResult.agent_agreement}
-                            </div>
-                            {judgeResult.minority_view && (
-                              <div className="mt-4 bg-rose-50/50 border border-rose-100 rounded-2xl p-4">
-                                <p className="text-xs font-bold uppercase tracking-wider text-rose-500 mb-2">Dissenting Opinion</p>
-                                <p className="text-sm text-slate-700 font-medium leading-relaxed">
-                                  {judgeResult.minority_view}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Right Column */}
-                        <div className="md:border-l md:border-slate-100 md:pl-12">
-                           <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-6 flex items-center gap-2">
-                             <CheckCircle className="w-4 h-4" />
-                             Deciding Evidence
-                           </h4>
-                           <ul className="space-y-6">
-                             {judgeResult.key_evidence?.map((evidence: string, idx: number) => (
-                               <motion.li 
-                                 initial={{ opacity: 0, x: 20 }}
-                                 animate={{ opacity: 1, x: 0 }}
-                                 transition={{ delay: 1.2 + (idx * 0.1) }}
-                                 key={idx} 
-                                 className="flex gap-4 group"
-                               >
-                                 <div className="shrink-0">
-                                   <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-200 text-slate-500 flex items-center justify-center font-bold text-sm group-hover:bg-indigo-50 group-hover:border-indigo-200 group-hover:text-indigo-600 transition-colors shadow-sm">
-                                     {idx + 1}
-                                   </div>
-                                 </div>
-                                 <div className="pt-1 text-[15px] text-slate-700 font-medium leading-relaxed group-hover:text-slate-900 transition-colors">
-                                   {evidence}
-                                 </div>
-                               </motion.li>
-                             ))}
-                           </ul>
-                        </div>
-                      </div>
-
-                      {/* Phase 2: Citation Network Visualization */}
-                      <div className="px-10 pb-12">
-                        <CitationGraph claim={claim} agentResults={agentResults} />
-                      </div>
-                      </div>
-                      {/* Report Card content end */}
-
-                      <div className="bg-slate-50 p-6 sm:px-10 border-t border-slate-200 flex flex-wrap gap-4 items-center justify-between">
-                        <div className="flex flex-wrap gap-3">
-                          <button 
-                            onClick={downloadReport}
-                            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
-                          >
-                            <Download className="w-4 h-4" />
-                            Download Card
-                          </button>
-                          <button 
-                            onClick={copyShareLink}
-                            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
-                          >
-                            <Link2 className="w-4 h-4 text-indigo-500" />
-                            Share Link
-                          </button>
-                        </div>
-                        <button 
-                          onClick={resetState}
-                          className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-slate-900 text-white font-bold hover:bg-indigo-600 transition-all rounded-2xl shadow-lg hover:shadow-xl active:scale-95"
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                      {[
+                        { icon: Globe2, title: "Global Retrieval", desc: "We scan Wikipedia, academic papers, and live news feeds to gather raw evidence." },
+                        { icon: BrainCircuit, title: "Multi-Agent Debate", desc: "Specialized agents challenge and defend the claim to eliminate bias." },
+                        { icon: Scale, title: "Judicial Verdict", desc: "A neutral judge weighs all arguments to deliver a final forensic verdict." }
+                      ].map((item, i) => (
+                        <motion.div
+                          key={i}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.3 + (i * 0.1) }}
+                          className="p-6 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-xl hover:border-indigo-100 transition-all group"
                         >
-                          <RefreshCw className="w-5 h-5" />
-                          New Analysis
-                        </button>
+                          <div className="w-12 h-12 rounded-xl bg-slate-50 flex items-center justify-center mb-4 group-hover:bg-indigo-50 transition-colors">
+                            <item.icon className="w-6 h-6 text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                          </div>
+                          <h4 className="font-bold text-slate-800 mb-2">{item.title}</h4>
+                          <p className="text-sm text-slate-500 leading-relaxed">{item.desc}</p>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Trending Claims */}
+                  <section className="pb-12">
+                    <div className="flex items-center justify-between mb-8">
+                      <h3 className="text-xl font-bold text-slate-800">Trending Queries</h3>
+                      <div className="flex gap-2">
+                        <button className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"><ArrowRight size={16} className="rotate-180" /></button>
+                        <button className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"><ArrowRight size={16} /></button>
                       </div>
-                    </motion.div>
-                  )}
-
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      {[
+                        "5G technology and health impacts",
+                        "Historical accuracy of Apollo 11",
+                        "Global temperature trends 2024",
+                        "Impact of microplastics on sea life"
+                      ].map((t, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setClaim(t)}
+                          className="p-4 text-left bg-slate-50 border border-slate-100 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 transition-all text-sm font-medium text-slate-600 flex items-center justify-between group"
+                        >
+                          {t}
+                          <ArrowRight size={14} className="opacity-0 group-hover:opacity-100 transition-opacity text-indigo-600" />
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              )}
+            </div>
 
-        </>
+            {/* Agents & Timeline Area */}
+            <AnimatePresence mode="wait">
+              {uiState === 'analyzing' && (
+                <motion.div
+                  key="grid"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.3 }}
+                  className="mt-16"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+                    {/* Agent A: Skeptic */}
+                    <AgentCard
+                      title="The Skeptic"
+                      role="Agent A (Meta Llama 3.3)"
+                      icon={<ShieldAlert className="w-6 h-6 text-rose-500" />}
+                      colorClass="border-rose-200 bg-rose-50/50"
+                      headerColor="text-rose-700"
+                      progress={agentProgress.skeptic}
+                      thinkingMessages={["Scanning for logical fallacies...", "Searching counter-evidence...", "Analyzing rhetoric..."]}
+                    />
+
+                    {/* Agent C: Analyst */}
+                    <AgentCard
+                      title="The Analyst"
+                      role="Agent C (Google via OpenRouter)"
+                      icon={<Search className="w-6 h-6 text-blue-500" />}
+                      colorClass="border-blue-200 bg-blue-50/50"
+                      headerColor="text-blue-700"
+                      progress={agentProgress.analyst}
+                      thinkingMessages={["Cross-referencing dates...", "Checking statistical data...", "Consulting scientific consensus..."]}
+                    />
+
+                    {/* Agent B: Supporter */}
+                    <AgentCard
+                      title="The Supporter"
+                      role="Agent B (Meta Llama 3.1)"
+                      icon={<CheckCircle className="w-6 h-6 text-emerald-500" />}
+                      colorClass="border-emerald-200 bg-emerald-50/50"
+                      headerColor="text-emerald-700"
+                      progress={agentProgress.supporter}
+                      thinkingMessages={["Searching supporting context...", "Finding validating sources...", "Strengthening arguments..."]}
+                    />
+                  </div>
+
+                  {/* Ticker Tape */}
+                  <div className="w-full max-w-4xl mx-auto mt-8 overflow-hidden bg-white rounded-xl border border-slate-200 py-3 shadow-sm relative">
+                    <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-white to-transparent z-10 pointer-events-none"></div>
+                    <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-white to-transparent z-10 pointer-events-none"></div>
+                    <motion.div
+                      animate={{ x: [600, -1000] }}
+                      transition={{ repeat: Infinity, duration: 20, ease: "linear" }}
+                      className="whitespace-nowrap flex gap-12 text-xs font-mono font-medium text-slate-500"
+                    >
+                      <span className="text-rose-600">[SKEPTIC] Interrogating logical fallacies...</span>
+                      <span className="text-slate-300">•</span>
+                      <span className="text-emerald-600">[SUPPORTER] Cross-referencing credible sources...</span>
+                      <span className="text-slate-300">•</span>
+                      <span className="text-blue-600">[ANALYST] Fact-checking statistical data...</span>
+                      <span className="text-slate-300">•</span>
+                      <span className="text-slate-700">[SYSTEM] Connecting to Live Search nodes...</span>
+                    </motion.div>
+                  </div>
+                </motion.div>
+              )}
+
+              {(uiState === 'agents_done' || uiState === 'judging' || uiState === 'verdict_ready') && agentResults && (
+                <motion.div
+                  key="timeline"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="max-w-4xl mx-auto mt-12 space-y-8"
+                >
+                  <h3 className="text-xl font-bold tracking-tight text-slate-800 text-center mb-8">Debate Timeline</h3>
+
+                  <AnimatePresence>
+                    {timelineStep >= 1 && (
+                      <TimelineMessage
+                        key="timeline-step-1"
+                        role="Agent B The Supporter"
+                        title="Defending the claim"
+                        icon={<CheckCircle className="w-5 h-5 text-emerald-500" />}
+                        colorClass="bg-emerald-50 border-emerald-200 text-emerald-800"
+                        result={agentResults.supporter}
+                        delay={0}
+                      />
+                    )}
+                    {timelineStep >= 2 && (
+                      <TimelineMessage
+                        key="timeline-step-2"
+                        role="Agent A The Skeptic"
+                        title="Presenting Counter Argument"
+                        icon={<ShieldAlert className="w-5 h-5 text-rose-500" />}
+                        colorClass="bg-rose-50 border-rose-200 text-rose-800"
+                        result={agentResults.skeptic}
+                        delay={0}
+                      />
+                    )}
+                    {timelineStep >= 3 && (
+                      <TimelineMessage
+                        key="timeline-step-3"
+                        role="Agent C The Analyst"
+                        title="Objective Findings"
+                        icon={<Search className="w-5 h-5 text-blue-500" />}
+                        colorClass="bg-blue-50 border-blue-200 text-blue-800"
+                        result={agentResults.analyst}
+                        delay={0}
+                      />
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Judge Area */}
+            <AnimatePresence>
+              {(uiState === 'judging' || uiState === 'verdict_ready') && (
+                <motion.div
+                  initial={{ opacity: 0, y: 50 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                  className="mt-12 max-w-4xl mx-auto"
+                >
+                  <div className="relative">
+                    {/* Connecting Line */}
+                    <div className="absolute -top-12 left-1/2 w-px h-12 bg-slate-300 transform -translate-x-1/2"></div>
+
+                    <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden relative">
+
+                      {uiState === 'judging' && (
+                        <div className="p-16 text-center flex flex-col items-center justify-center bg-white relative overflow-hidden">
+                          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
+
+                          <div className="relative mb-8">
+                            <div className="w-24 h-24 rounded-full bg-indigo-50 flex items-center justify-center border border-indigo-100 relative z-10 shadow-sm">
+                              <Scale className="w-10 h-10 text-indigo-600" />
+                            </div>
+                            {/* Radar sweep effect */}
+                            <div className="absolute inset-0 rounded-full border border-indigo-200 animate-[spin_4s_linear_infinite] [mask-image:conic-gradient(transparent_50%,black_100%)]"></div>
+                            <div className="absolute inset-[-10px] rounded-full border border-indigo-50/50 animate-[spin_6s_linear_infinite_reverse] [mask-image:conic-gradient(transparent_70%,black_100%)]"></div>
+                          </div>
+
+                          <h3 className="text-2xl font-bold tracking-tight text-slate-800 mb-3">Final Judicial Evaluation</h3>
+                          <p className="text-slate-500 max-w-md mx-auto mb-10 leading-relaxed font-medium">Synthesizing multi-agent debate, weighing source credibility, and cross-referencing consensus data...</p>
+
+                          <div className="w-full max-w-md h-1.5 bg-slate-100 rounded-full overflow-hidden shadow-inner">
+                            <motion.div
+                              className="h-full bg-indigo-500 rounded-full relative"
+                              initial={{ width: "0%" }}
+                              animate={{ width: "100%" }}
+                              transition={{ duration: 15, ease: "linear" }}
+                            >
+                              <div className="absolute top-0 right-0 bottom-0 w-20 bg-gradient-to-r from-transparent to-white/50"></div>
+                            </motion.div>
+                          </div>
+                          <div className="mt-8 w-full max-w-lg">
+                            <AnimatedThinking messages={["Reviewing Agent B's sources...", "Verifying Agent A's logical consistency...", "Consulting analytical data...", "Determining confidence score..."]} />
+                          </div>
+                        </div>
+                      )}
+
+                      {uiState === 'verdict_ready' && judgeResult && (
+                        <motion.div
+                          initial={{ opacity: 0, filter: 'blur(10px)' }}
+                          animate={{ opacity: 1, filter: 'blur(0px)' }}
+                          transition={{ duration: 0.7 }}
+                        >
+                          {/* Report Card content start */}
+                          <div ref={reportRef} className="bg-slate-50">
+                            {/* Hero Verdict Banner */}
+                            <div className={`px-10 py-16 text-white ${getVerdictBgColor(judgeResult.verdict_color)} flex flex-col items-center justify-center text-center relative overflow-hidden shadow-inner`}>
+                              <div className="absolute inset-0 bg-black/10 mix-blend-overlay"></div>
+                              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+
+                              {judgeResult.cached && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.8 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  className="absolute top-8 right-8 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/30 flex items-center gap-2 shadow-lg z-20"
+                                >
+                                  <Zap className="w-3.5 h-3.5 text-yellow-300 fill-yellow-300" />
+                                  <span className="text-[10px] font-black uppercase tracking-wider text-white">Instant Result</span>
+                                </motion.div>
+                              )}
+
+                              <motion.div
+                                initial={{ scale: 1.5, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                transition={{ type: "spring", bounce: 0.5, delay: 0.2 }}
+                                className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6 shadow-xl border border-white/20 relative z-10"
+                              >
+                                <Scale className="w-10 h-10 text-white" />
+                              </motion.div>
+
+                              <motion.h3
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: 0.4 }}
+                                className="text-xs font-bold uppercase tracking-[0.2em] opacity-80 mb-4 relative z-10"
+                              >
+                                Forensic Verdict
+                              </motion.h3>
+
+                              <motion.div
+                                initial={{ scale: 0.8, opacity: 0, y: 20 }}
+                                animate={{ scale: 1, opacity: 1, y: 0 }}
+                                transition={{ type: "spring", bounce: 0.6, delay: 0.5 }}
+                                className="text-7xl md:text-8xl font-black mb-6 tracking-tighter drop-shadow-xl relative z-10 uppercase"
+                              >
+                                {judgeResult.verdict}
+                              </motion.div>
+
+                              <motion.p
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ delay: 0.8 }}
+                                className="text-xl md:text-2xl font-semibold max-w-3xl opacity-95 text-balance leading-snug relative z-10 drop-shadow-md"
+                              >
+                                {judgeResult.final_summary}
+                              </motion.p>
+                            </div>
+
+                            <div className="p-10 md:p-12 grid grid-cols-1 md:grid-cols-2 gap-12 bg-white">
+                              {/* Left Column */}
+                              <div className="space-y-10">
+                                {/* Confidence Score */}
+                                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 shadow-sm">
+                                  <div className="flex items-end justify-between mb-4">
+                                    <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest">System Confidence</h4>
+                                    <span className={`text-4xl font-black tracking-tighter ${getVerdictTextColor(judgeResult.verdict_color)}`}>
+                                      {judgeResult.confidence_score}%
+                                    </span>
+                                  </div>
+                                  <div className="w-full h-4 bg-slate-200 rounded-full overflow-hidden shadow-inner">
+                                    <motion.div
+                                      className={`h-full ${getVerdictBgColor(judgeResult.verdict_color)} relative`}
+                                      initial={{ width: "0%" }}
+                                      animate={{ width: `${judgeResult.confidence_score}%` }}
+                                      transition={{ duration: 1.5, delay: 1, ease: "easeOut" }}
+                                    >
+                                      <div className="absolute top-0 right-0 bottom-0 w-10 bg-gradient-to-r from-transparent to-white/30"></div>
+                                    </motion.div>
+                                  </div>
+                                </div>
+
+                                {/* Reasoning */}
+                                <div>
+                                  <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-3">Judicial Reasoning</h4>
+                                  <div className="prose prose-slate prose-sm max-w-none text-slate-700 leading-relaxed font-medium">
+                                    <p>{judgeResult.confidence_reasoning}</p>
+                                  </div>
+                                </div>
+
+                                {/* Consensus */}
+                                <div className="pt-8 border-t border-slate-100">
+                                  <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-4">Agent Consensus</h4>
+                                  <div className="inline-flex items-center px-4 py-2 rounded-xl bg-slate-100 text-slate-800 text-sm font-bold shadow-sm border border-slate-200">
+                                    {judgeResult.agent_agreement}
+                                  </div>
+                                  {judgeResult.minority_view && (
+                                    <div className="mt-4 bg-rose-50/50 border border-rose-100 rounded-2xl p-4">
+                                      <p className="text-xs font-bold uppercase tracking-wider text-rose-500 mb-2">Dissenting Opinion</p>
+                                      <p className="text-sm text-slate-700 font-medium leading-relaxed">
+                                        {judgeResult.minority_view}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Right Column */}
+                              <div className="md:border-l md:border-slate-100 md:pl-12">
+                                <h4 className="text-xs font-bold uppercase text-slate-400 tracking-widest mb-6 flex items-center gap-2">
+                                  <CheckCircle className="w-4 h-4" />
+                                  Deciding Evidence
+                                </h4>
+                                <ul className="space-y-6">
+                                  {judgeResult.key_evidence?.map((evidence: string, idx: number) => (
+                                    <motion.li
+                                      initial={{ opacity: 0, x: 20 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      transition={{ delay: 1.2 + (idx * 0.1) }}
+                                      key={idx}
+                                      className="flex gap-4 group"
+                                    >
+                                      <div className="shrink-0">
+                                        <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-200 text-slate-500 flex items-center justify-center font-bold text-sm group-hover:bg-indigo-50 group-hover:border-indigo-200 group-hover:text-indigo-600 transition-colors shadow-sm">
+                                          {idx + 1}
+                                        </div>
+                                      </div>
+                                      <div className="pt-1 text-[15px] text-slate-700 font-medium leading-relaxed group-hover:text-slate-900 transition-colors">
+                                        {evidence}
+                                      </div>
+                                    </motion.li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+
+                            {/* Phase 2: Citation Network Visualization */}
+                            <div className="px-10 pb-12">
+                              <CitationGraph claim={claim} agentResults={agentResults} />
+                            </div>
+                          </div>
+                          {/* Report Card content end */}
+
+                          <div className="bg-slate-50 p-6 sm:px-10 border-t border-slate-200 flex flex-wrap gap-4 items-center justify-between">
+                            <div className="flex flex-wrap gap-3">
+                              <button
+                                onClick={downloadReport}
+                                className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
+                              >
+                                <Download className="w-4 h-4" />
+                                Download Card
+                              </button>
+                              <button
+                                onClick={copyShareLink}
+                                className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-700 text-sm font-bold hover:bg-slate-50 hover:border-slate-300 transition-all rounded-xl shadow-sm hover:shadow active:scale-95"
+                              >
+                                <Link2 className="w-4 h-4 text-indigo-500" />
+                                Share Link
+                              </button>
+                            </div>
+                            <button
+                              onClick={resetState}
+                              className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-4 bg-slate-900 text-white font-bold hover:bg-indigo-600 transition-all rounded-2xl shadow-lg hover:shadow-xl active:scale-95"
+                            >
+                              <RefreshCw className="w-5 h-5" />
+                              New Analysis
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+          </>
         )}
       </main>
 
@@ -1299,17 +1309,17 @@ export default function App() {
       <footer className="relative max-w-7xl mx-auto px-6 pb-12 mt-12">
         <div className="relative overflow-hidden rounded-[3rem] p-12 sm:p-20 shadow-2xl border border-white/20">
           {/* Dynamic Background Image */}
-          <div 
+          <div
             className="absolute inset-0 z-0 scale-110 blur-[1px]"
-            style={{ 
-              backgroundImage: 'url("https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2070")', 
-              backgroundSize: 'cover', 
-              backgroundPosition: 'center' 
+            style={{
+              backgroundImage: 'url("https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=2070")',
+              backgroundSize: 'cover',
+              backgroundPosition: 'center'
             }}
           ></div>
           {/* Glass Overlay */}
           <div className="absolute inset-0 bg-slate-900/20 backdrop-blur-xl z-10"></div>
-          
+
           <div className="relative z-20 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-12 sm:gap-20">
             {/* Branding Column */}
             <div className="lg:col-span-2 space-y-8">
@@ -1392,12 +1402,12 @@ function AnimatedThinking({ messages }: { messages: string[] }) {
         <div className="w-24 h-24 rounded-full border border-indigo-100 animate-ping opacity-20"></div>
         <div className="w-32 h-32 rounded-full border border-indigo-50 absolute animate-ping opacity-10" style={{ animationDelay: '0.5s' }}></div>
       </div>
-      
+
       <div className="relative">
         <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
         <div className="absolute inset-0 bg-indigo-500 blur-md opacity-30 rounded-full"></div>
       </div>
-      
+
       <div className="text-sm font-medium h-6 flex items-center justify-center overflow-hidden w-full relative z-10">
         <AnimatePresence mode="popLayout">
           <motion.div
@@ -1416,9 +1426,9 @@ function AnimatedThinking({ messages }: { messages: string[] }) {
   );
 }
 
-function AgentCard({ 
+function AgentCard({
   title, role, icon, colorClass, headerColor, progress, thinkingMessages
-}: { 
+}: {
   title: string; role: string; icon: React.ReactNode; colorClass: string; headerColor: string;
   progress: AgentProgress; thinkingMessages: string[];
 }) {
@@ -1433,7 +1443,7 @@ function AgentCard({
           <div className={`font-bold tracking-tight ${headerColor}`}>{title}</div>
         </div>
       </div>
-      
+
       <div className="p-0 flex-1 flex flex-col bg-slate-50/50 relative overflow-hidden">
         {/* Subtle inner shadow for depth */}
         <div className="absolute inset-0 pointer-events-none shadow-[inset_0_2px_10px_rgba(0,0,0,0.02)]"></div>
@@ -1451,7 +1461,7 @@ function AgentCard({
             <div className="text-slate-400 text-sm font-medium mt-2">Awaiting initialization</div>
           </div>
         )}
-        
+
         {progress === 'loading' && (
           <AnimatedThinking messages={thinkingMessages} />
         )}
@@ -1462,14 +1472,14 @@ function AgentCard({
               <ShieldAlert className="w-5 h-5 text-rose-600" />
             </div>
             <div className="text-sm font-medium text-center leading-relaxed">
-              Analysis Failed<br/>
+              Analysis Failed<br />
               <span className="text-xs text-rose-400 font-normal">Check connection or quota</span>
             </div>
           </div>
         )}
 
         {progress === 'done' && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ type: "spring", stiffness: 200, damping: 20 }}
@@ -1493,27 +1503,27 @@ function getTrustBadge(url: string) {
   if (lower.includes('wikipedia.org') || lower === 'wikipedia') {
     return { label: 'Wikipedia', color: 'bg-violet-100 text-violet-800 border-violet-200' };
   }
-  
+
   if (lower.includes('.gov') || lower.includes('.edu') || lower.includes('who.int') || lower.includes('cdc.gov') || lower.includes('nih.gov')) {
     return { label: 'High Trust', color: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
   }
-  
+
   if (lower.includes('reuters.com') || lower.includes('apnews.com') || lower.includes('nytimes.com') || lower.includes('bbc.com') || lower.includes('wsj.com') || lower.includes('bloomberg.com') || lower.includes('nature.com') || lower.includes('science.org')) {
     return { label: 'Reputable News', color: 'bg-blue-100 text-blue-800 border-blue-200' };
   }
-  
+
   if (lower.includes('twitter.com') || lower.includes('x.com') || lower.includes('reddit.com') || lower.includes('facebook.com') || lower.includes('medium.com') || lower.includes('tiktok.com')) {
     return { label: 'Social / Low Trust', color: 'bg-amber-100 text-amber-800 border-amber-200' };
   }
-  
+
   return { label: 'Standard', color: 'bg-slate-100 text-slate-700 border-slate-200' };
 }
 
 function createFailedAgentResult(role: 'SKEPTIC' | 'SUPPORTER' | 'ANALYST', error: string): AgentResult {
   const defaults = {
-    SKEPTIC: {agent: 'Skeptic', stance: 'FAILED', main_argument: 'The Skeptic could not complete this run.'},
-    SUPPORTER: {agent: 'Supporter', stance: 'FAILED', main_argument: 'The Supporter could not complete this run.'},
-    ANALYST: {agent: 'Analyst', stance: 'FAILED', main_analysis: 'The Analyst could not complete this run.'},
+    SKEPTIC: { agent: 'Skeptic', stance: 'FAILED', main_argument: 'The Skeptic could not complete this run.' },
+    SUPPORTER: { agent: 'Supporter', stance: 'FAILED', main_argument: 'The Supporter could not complete this run.' },
+    ANALYST: { agent: 'Analyst', stance: 'FAILED', main_analysis: 'The Analyst could not complete this run.' },
   } as const;
 
   return {
@@ -1582,7 +1592,7 @@ function HistoryPage({ history, onRestore, onClear }: { history: HistoryEntry[];
                 </div>
                 <div className="text-sm font-bold text-slate-700">{entry.judgeResult.confidence_score}%</div>
                 <div className="text-sm text-slate-500">
-                  {new Date(entry.createdAt).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}
+                  {new Date(entry.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </div>
               </button>
             ))}
@@ -1596,7 +1606,7 @@ function HistoryPage({ history, onRestore, onClear }: { history: HistoryEntry[];
 function TimelineMessage({ role, title, icon, colorClass, result, delay }: { role: string; title: string; icon: React.ReactNode; colorClass: string; result: AgentResult, delay: number, key?: string }) {
   const isFailed = Boolean(result.error);
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, x: -20, scale: 0.95, filter: 'blur(10px)' }}
       animate={{ opacity: 1, x: 0, scale: 1, filter: 'blur(0px)' }}
       transition={{ duration: 0.5, delay, type: "spring", bounce: 0.4 }}
@@ -1611,12 +1621,12 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
         </div>
       </div>
       <div className={`flex-1 rounded-3xl p-6 md:p-8 border shadow-sm relative overflow-hidden transition-all duration-300 hover:shadow-md ${isFailed ? 'bg-rose-50/50 border-rose-200 text-rose-800 hover:bg-rose-50' : `${colorClass.replace('bg-', 'bg-').replace('50', '50/50')} hover:${colorClass.split(' ')[0]}`}`}>
-        
+
         {/* Dossier Watermark */}
         <div className="absolute -right-8 -bottom-8 text-[6rem] font-black uppercase text-slate-900/[0.02] select-none pointer-events-none transform -rotate-12 z-0 tracking-tighter">
           {isFailed ? 'FAILED' : 'VERIFIED'}
         </div>
-        
+
         <div className="relative z-10">
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <span className="px-2.5 py-1 rounded-full bg-white/60 border border-current/10 text-[10px] font-bold uppercase tracking-widest opacity-80 backdrop-blur-sm shadow-sm">{role}</span>
@@ -1624,11 +1634,11 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
             <span className="text-sm font-bold opacity-90">{title}</span>
             <span className="ml-auto text-[10px] font-mono text-slate-400 bg-white/50 px-2 py-0.5 rounded-md border border-slate-200/50 hidden sm:block">ID:{Math.random().toString(36).substring(7).toUpperCase()}</span>
           </div>
-          
+
           <p className="text-slate-800 leading-relaxed font-medium mb-6 text-[15px] md:text-base">
             {result.error ? `Analysis Skipped: ${result.error}` : result.main_argument || result.main_analysis}
           </p>
-          
+
           {result.evidence && result.evidence.length > 0 && (
             <div className="space-y-3 mt-6 pt-6 border-t border-current/10">
               <div className="flex items-center gap-2 mb-3">
@@ -1641,7 +1651,7 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
                   let domain = '';
                   try {
                     domain = ev.url ? new URL(ev.url).hostname : '';
-                  } catch(e) {}
+                  } catch (e) { }
 
                   return (
                     <div key={i} className="bg-white/80 backdrop-blur-md p-4 rounded-2xl border border-current/10 shadow-sm hover:shadow-md transition-all hover:bg-white group/ev cursor-default">
@@ -1685,16 +1695,16 @@ function TimelineMessage({ role, title, icon, colorClass, result, delay }: { rol
             summary={result.evidence_summary}
           />
         )}
-        
+
         {(result.weakness_of_claim || result.strongest_point || result.key_context) && (
           <div className="relative z-10 mt-6 pt-5 border-t border-current/10 bg-gradient-to-r from-current/5 to-transparent -mx-6 md:-mx-8 -mb-6 md:-mb-8 px-6 md:px-8 pb-6 md:pb-8">
-             <div className="flex items-center gap-2 mb-2">
-               <Sparkles className="w-4 h-4 opacity-70" />
-               <span className="text-xs font-bold uppercase tracking-wider opacity-70">Key Insight</span>
-             </div>
-             <p className="text-sm font-medium opacity-90 leading-relaxed max-w-2xl text-balance">
-               {result.weakness_of_claim || result.strongest_point || result.key_context}
-             </p>
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-4 h-4 opacity-70" />
+              <span className="text-xs font-bold uppercase tracking-wider opacity-70">Key Insight</span>
+            </div>
+            <p className="text-sm font-medium opacity-90 leading-relaxed max-w-2xl text-balance">
+              {result.weakness_of_claim || result.strongest_point || result.key_context}
+            </p>
           </div>
         )}
       </div>
@@ -1790,10 +1800,11 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
 
   useEffect(() => {
     if (!user) return;
-    fetch(`/api/usage/summary?userId=${user.id}&days=${days}`)
+    getAuthHeaders()
+      .then(headers => fetch(`/api/usage/summary?days=${days}`, { headers }))
       .then(r => r.json())
       .then(setLiveData)
-      .catch(() => {});
+      .catch(() => { });
   }, [user, days]);
 
   // Build analytics from local history (always available)
@@ -1823,16 +1834,16 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
   });
 
   const agentConfidence = [
-    { name: 'Skeptic', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.skeptic?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
-    { name: 'Supporter', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.supporter?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
-    { name: 'Analyst', confidence: history.length ? (history.reduce((s,e) => s + (e.agentResults?.analyst?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+    { name: 'Skeptic', confidence: history.length ? (history.reduce((s, e) => s + (e.agentResults?.skeptic?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+    { name: 'Supporter', confidence: history.length ? (history.reduce((s, e) => s + (e.agentResults?.supporter?.confidence || 0), 0) / history.length).toFixed(0) : 0 },
+    { name: 'Analyst', confidence: history.length ? (history.reduce((s, e) => s + (e.agentResults?.analyst?.confidence || e.agentResults?.analyst?.factual_accuracy_score || 0), 0) / history.length).toFixed(0) : 0 },
   ];
 
   const statCards = [
     { label: 'Claims Analyzed', value: history.length, icon: <Activity className="w-4 h-4" />, color: 'indigo' },
     { label: 'Avg Confidence', value: `${avgConfidence}%`, icon: <Zap className="w-4 h-4" />, color: 'violet' },
-    { label: 'Credits Used', value: liveData?.total_credits?.toFixed(1) || '0.0', icon: <CreditCard className="w-4 h-4" />, color: 'amber' },
-    { label: 'Remaining Balance', value: liveData?.current_balance?.toFixed(1) || '0.0', icon: <Wallet className="w-4 h-4" />, color: 'emerald' },
+    { label: 'True Verdicts', value: verdictCounts['TRUE'] || 0, icon: <CheckCircle className="w-4 h-4" />, color: 'emerald' },
+    { label: 'False Verdicts', value: verdictCounts['FALSE'] || 0, icon: <ShieldAlert className="w-4 h-4" />, color: 'rose' },
   ];
 
   if (history.length === 0) return (
@@ -1862,60 +1873,6 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
         </select>
       </div>
 
-      {/* Token Monitoring Section */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="md:col-span-2 bg-gradient-to-br from-indigo-600 to-violet-700 p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden">
-          <div className="relative z-10">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h3 className="text-xl font-black tracking-tight">Token Tank</h3>
-                <p className="text-indigo-100 text-sm font-medium opacity-80">Your available compute resource balance</p>
-              </div>
-              <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
-                <Diamond className="w-6 h-6 text-white" />
-              </div>
-            </div>
-
-            <div className="flex items-end gap-3 mb-8">
-              <span className="text-5xl font-black tracking-tighter">{liveData?.current_balance?.toFixed(1) || '0.0'}</span>
-              <span className="text-indigo-200 font-bold mb-1.5 uppercase tracking-widest text-xs">Tokens Remaining</span>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-indigo-100">
-                <span>Usage Progress</span>
-                <span>{(((liveData?.current_balance || 0) / 500) * 100).toFixed(0)}% available</span>
-              </div>
-              <div className="h-3 bg-white/20 rounded-full overflow-hidden backdrop-blur-sm">
-                <motion.div 
-                  initial={{ width: 0 }}
-                  animate={{ width: `${Math.min(100, ((liveData?.current_balance || 0) / 500) * 100)}%` }}
-                  className="h-full bg-white rounded-full shadow-[0_0_20px_rgba(255,255,255,0.5)]"
-                />
-              </div>
-            </div>
-          </div>
-          {/* Decorative shapes */}
-          <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-white/10 rounded-full blur-3xl" />
-          <div className="absolute -left-10 -top-10 w-32 h-32 bg-indigo-400/20 rounded-full blur-2xl" />
-        </div>
-
-        <div className="bg-white border border-slate-200 p-6 rounded-[2.5rem] shadow-sm flex flex-col justify-center">
-          <div className="text-center space-y-4">
-            <div className="w-16 h-16 bg-emerald-100 rounded-3xl flex items-center justify-center mx-auto">
-              <Sparkles className="w-8 h-8 text-emerald-600" />
-            </div>
-            <div>
-              <h4 className="font-black text-slate-900">Refill Tokens</h4>
-              <p className="text-sm text-slate-500 font-medium">Enterprise plans get unlimited tokens and priority agent queuing.</p>
-            </div>
-            <button className="w-full py-3 bg-slate-900 text-white rounded-2xl font-bold text-sm hover:bg-slate-800 transition-colors">
-              Upgrade to Pro
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {statCards.map((stat, i) => (
@@ -1939,14 +1896,14 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
               <AreaChart data={last7}>
                 <defs>
                   <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 11}} allowDecimals={false} />
-                <Tooltip contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}} />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} allowDecimals={false} />
+                <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }} />
                 <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorCount)" name="Claims" />
               </AreaChart>
             </ResponsiveContainer>
@@ -1964,7 +1921,7 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
                     <Cell key={index} fill={VERDICT_COLORS[entry.name] || '#94a3b8'} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value, name) => [value, name]} contentStyle={{borderRadius: '12px', border: 'none'}} />
+                <Tooltip formatter={(value, name) => [value, name]} contentStyle={{ borderRadius: '12px', border: 'none' }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -1972,7 +1929,7 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
             {verdictPieData.map((entry, i) => (
               <div key={i} className="flex items-center justify-between text-xs font-medium">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{backgroundColor: VERDICT_COLORS[entry.name] || '#94a3b8'}} />
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: VERDICT_COLORS[entry.name] || '#94a3b8' }} />
                   <span className="text-slate-500 capitalize">{entry.name.toLowerCase()}</span>
                 </div>
                 <span className="text-slate-900 font-bold">{entry.value}</span>
@@ -1999,7 +1956,7 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
                     className="h-full rounded-full transition-all duration-700"
                     style={{
                       width: `${agent.confidence}%`,
-                      background: ['#6366f1','#a855f7','#ec4899'][i]
+                      background: ['#6366f1', '#a855f7', '#ec4899'][i]
                     }}
                   />
                 </div>
@@ -2017,7 +1974,7 @@ function UsageDashboard({ user, history }: { user: any; history: HistoryEntry[] 
               const color = VERDICT_COLORS[v] || '#94a3b8';
               return (
                 <div key={i} className="flex items-start gap-3 p-3 bg-slate-50 rounded-2xl">
-                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{backgroundColor: color}} />
+                  <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: color }} />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-800 truncate">{entry.claim}</p>
                     <p className="text-xs text-slate-400 mt-0.5">{v} · {entry.judgeResult?.confidence_score?.toFixed(0)}% confidence</p>
@@ -2039,7 +1996,7 @@ function AnalyticsMockPage() {
         <h2 className="text-3xl font-black text-slate-900 tracking-tight">System Analytics</h2>
         <p className="text-slate-500 mt-2 font-medium">Global processing metrics and accuracy ratings.</p>
       </div>
-      
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         {[
           { label: 'Total Claims Analyzed', value: '24,892', trend: '+12% this week' },
@@ -2056,14 +2013,14 @@ function AnalyticsMockPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm h-64 flex flex-col items-center justify-center relative overflow-hidden">
-           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
-           <BrainCircuit className="w-12 h-12 text-slate-300 mb-4" />
-           <p className="text-slate-500 font-medium text-center">Historical Accuracy Chart<br/><span className="text-xs">Connecting to data warehouse...</span></p>
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
+          <BrainCircuit className="w-12 h-12 text-slate-300 mb-4" />
+          <p className="text-slate-500 font-medium text-center">Historical Accuracy Chart<br /><span className="text-xs">Connecting to data warehouse...</span></p>
         </div>
         <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm h-64 flex flex-col items-center justify-center relative overflow-hidden">
-           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
-           <Globe2 className="w-12 h-12 text-slate-300 mb-4" />
-           <p className="text-slate-500 font-medium text-center">Global Claim Heatmap<br/><span className="text-xs">Connecting to geospatial API...</span></p>
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.05)_0%,transparent_70%)] pointer-events-none"></div>
+          <Globe2 className="w-12 h-12 text-slate-300 mb-4" />
+          <p className="text-slate-500 font-medium text-center">Global Claim Heatmap<br /><span className="text-xs">Connecting to geospatial API...</span></p>
         </div>
       </div>
     </div>
@@ -2082,7 +2039,7 @@ const REVIEW_FLAGS = {
 const INITIAL_QUEUE = [
   {
     id: 'REQ-892', priority: 'high',
-    claim: 'New tax regulations apply retroactively to 2024 income.', 
+    claim: 'New tax regulations apply retroactively to 2024 income.',
     aiVerdict: 'Misleading', aiConfidence: 42,
     flags: ['low_confidence', 'legal'],
     submittedAt: '2026-05-06T08:12:00Z', submittedBy: 'api-user-4421',
@@ -2154,11 +2111,11 @@ function ReviewQueueMockPage() {
 
   const statusBadge = (s: string) => {
     switch (s) {
-      case 'pending':   return 'bg-amber-100 text-amber-800 border border-amber-200';
+      case 'pending': return 'bg-amber-100 text-amber-800 border border-amber-200';
       case 'reviewing': return 'bg-blue-100 text-blue-800 border border-blue-200';
-      case 'approved':  return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
-      case 'rejected':  return 'bg-rose-100 text-rose-800 border border-rose-200';
-      default:          return 'bg-slate-100 text-slate-600';
+      case 'approved': return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+      case 'rejected': return 'bg-rose-100 text-rose-800 border border-rose-200';
+      default: return 'bg-slate-100 text-slate-600';
     }
   };
 
@@ -2238,7 +2195,7 @@ function ReviewQueueMockPage() {
               >
                 {/* Priority dot */}
                 <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${priorityColor(item.priority)}`} title={`${item.priority} priority`} />
-                
+
                 {/* ID */}
                 <span className="text-xs font-mono text-slate-400 w-20 flex-shrink-0">{item.id}</span>
 
@@ -2461,16 +2418,17 @@ function BatchMockPage() {
   const processItem = async (index: number) => {
     const item = items[index];
     setItems(prev => prev.map((it, idx) => idx === index ? { ...it, status: 'processing' } : it));
-    
+
     try {
+      const authHeaders = await getAuthHeaders();
       const res = await fetch('/api/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ claim: item.claim })
       });
-      
+
       const data = await res.json();
-      
+
       if (data.error) throw new Error(data.error);
 
       // Map backend response to UI
@@ -2478,9 +2436,9 @@ function BatchMockPage() {
       const confidence = Math.round(data.confidence * 100);
       const color = verdict === 'True' ? 'green' : verdict === 'False' ? 'red' : verdict === 'Partially True' ? 'yellow' : 'slate';
 
-      setItems(prev => prev.map((it, idx) => idx === index ? { 
-        ...it, 
-        status: 'done', 
+      setItems(prev => prev.map((it, idx) => idx === index ? {
+        ...it,
+        status: 'done',
         verdict,
         confidence,
         color,
@@ -2501,11 +2459,11 @@ function BatchMockPage() {
   const runBatch = async () => {
     if (isProcessing || items.length === 0) return;
     setIsProcessing(true);
-    
+
     // Concurrency control: process 3 at a time
     const CONCURRENCY = 3;
     const queue = [...Array(items.length).keys()];
-    
+
     const workers = Array(CONCURRENCY).fill(null).map(async () => {
       while (queue.length > 0) {
         const index = queue.shift();
@@ -2550,17 +2508,17 @@ function BatchMockPage() {
             Analyze thousands of claims simultaneously with high-concurrency multi-agent forensic verification. Optimized for enterprise intelligence pipelines.
           </p>
         </div>
-        
+
         {items.length > 0 && (
           <div className="flex items-center gap-4 bg-white p-2 rounded-[2rem] border border-slate-200 shadow-xl shadow-slate-200/50">
-            <button 
+            <button
               onClick={() => setItems([])}
               disabled={isProcessing}
               className="px-6 py-3 text-slate-500 font-bold hover:text-rose-500 transition-colors disabled:opacity-50"
             >
               Reset
             </button>
-            <button 
+            <button
               onClick={runBatch}
               disabled={isProcessing || items.every(i => i.status !== 'pending')}
               className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-100 flex items-center gap-3 active:scale-95 disabled:opacity-50 disabled:bg-slate-300"
@@ -2582,7 +2540,7 @@ function BatchMockPage() {
       </div>
 
       {items.length === 0 ? (
-        <div 
+        <div
           onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
           onDragLeave={() => setDragActive(false)}
           onDrop={(e) => { e.preventDefault(); setDragActive(false); handleFiles(e.dataTransfer.files); }}
@@ -2591,7 +2549,7 @@ function BatchMockPage() {
           {/* Animated Background Decor */}
           <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-100/50 rounded-full blur-3xl -mr-32 -mt-32"></div>
           <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-100/50 rounded-full blur-3xl -ml-32 -mb-32"></div>
-          
+
           <div className="relative z-10">
             <div className={`w-28 h-28 rounded-[2.5rem] flex items-center justify-center mx-auto mb-10 transition-all duration-700 shadow-2xl ${dragActive ? 'bg-indigo-600 text-white rotate-12 scale-110 shadow-indigo-200' : 'bg-slate-50 text-slate-300 group-hover:bg-white group-hover:text-indigo-500 group-hover:-rotate-6'}`}>
               <UploadCloud className="w-12 h-12" />
@@ -2600,13 +2558,13 @@ function BatchMockPage() {
             <p className="text-slate-500 text-lg font-medium max-w-lg mx-auto mb-12 leading-relaxed">
               Drag your <span className="text-indigo-600 font-bold">CSV</span> or <span className="text-indigo-600 font-bold">JSON</span> verdict request files here. LUMINA will auto-detect claim fields.
             </p>
-            
+
             <label className="inline-flex items-center gap-4 px-10 py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black text-lg hover:bg-slate-900 transition-all shadow-2xl shadow-indigo-200 cursor-pointer active:scale-95">
               <input type="file" className="hidden" accept=".csv,.json" onChange={(e) => e.target.files && handleFiles(e.target.files)} />
               <Search className="w-5 h-5" />
               Select Local File
             </label>
-            
+
             <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-12 text-center max-w-3xl mx-auto border-t border-slate-100 pt-12">
               <div className="space-y-1">
                 <div className="text-3xl font-black text-slate-900 tracking-tighter tracking-tighter">5,000</div>
@@ -2634,11 +2592,11 @@ function BatchMockPage() {
                   <div className="relative shrink-0">
                     <svg className="w-32 h-32 transform -rotate-90">
                       <circle cx="64" cy="64" r="56" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-white/10" />
-                      <motion.circle 
-                        cx="64" cy="64" r="56" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={351.85} 
+                      <motion.circle
+                        cx="64" cy="64" r="56" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={351.85}
                         initial={{ strokeDashoffset: 351.85 }}
                         animate={{ strokeDashoffset: 351.85 - (351.85 * progress) / 100 }}
-                        className="text-indigo-500" 
+                        className="text-indigo-500"
                       />
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -2692,12 +2650,11 @@ function BatchMockPage() {
                         </td>
                         <td className="px-8 py-5 text-center">
                           {item.verdict ? (
-                            <span className={`inline-flex px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm border ${
-                              item.color === 'green' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                              item.color === 'red' ? 'bg-rose-50 text-rose-700 border-rose-100' :
-                              item.color === 'yellow' ? 'bg-amber-50 text-amber-700 border-amber-100' :
-                              'bg-slate-50 text-slate-600 border-slate-100'
-                            }`}>
+                            <span className={`inline-flex px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm border ${item.color === 'green' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
+                                item.color === 'red' ? 'bg-rose-50 text-rose-700 border-rose-100' :
+                                  item.color === 'yellow' ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                                    'bg-slate-50 text-slate-600 border-slate-100'
+                              }`}>
                               {item.verdict}
                             </span>
                           ) : (
@@ -2710,10 +2667,10 @@ function BatchMockPage() {
                           {item.confidence !== null ? (
                             <div className="flex items-center gap-3">
                               <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden w-20 shadow-inner">
-                                <motion.div 
+                                <motion.div
                                   initial={{ width: 0 }}
                                   animate={{ width: `${item.confidence}%` }}
-                                  className={`h-full ${item.color === 'green' ? 'bg-emerald-500' : item.color === 'red' ? 'bg-rose-500' : 'bg-amber-500'}`} 
+                                  className={`h-full ${item.color === 'green' ? 'bg-emerald-500' : item.color === 'red' ? 'bg-rose-500' : 'bg-amber-500'}`}
                                 />
                               </div>
                               <span className="text-xs font-black text-slate-800 tracking-tighter">{item.confidence}%</span>
@@ -2780,7 +2737,7 @@ function BatchMockPage() {
               </div>
             </div>
 
-            <button 
+            <button
               onClick={exportResults}
               disabled={items.every(i => i.status === 'pending')}
               className="w-full py-5 bg-white border border-slate-200 text-slate-900 rounded-[1.5rem] font-black hover:bg-slate-50 transition-all flex items-center justify-center gap-3 shadow-xl shadow-slate-100 active:scale-95 disabled:opacity-50"
@@ -2788,7 +2745,7 @@ function BatchMockPage() {
               <Download className="w-5 h-5" />
               Download Report
             </button>
-            
+
             <div className="p-6 bg-indigo-50/50 rounded-[1.5rem] border border-indigo-100">
               <div className="flex gap-3 items-start">
                 <Shield className="w-5 h-5 text-indigo-600 shrink-0 mt-1" />
@@ -2837,14 +2794,7 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
   const handleAdd = async () => {
     if (!supabase || !newName || !newUrl) return;
     try {
-      // Include user_id so RLS policy (user_id = auth.uid()) is satisfied
-      const { data: { user } } = await supabase.auth.getUser();
-      const { error } = await supabase.from('webhooks').insert([{
-        name: newName,
-        url: newUrl,
-        events: ['verdict.ready'],
-        user_id: user?.id ?? null,
-      }]);
+      const { error } = await supabase.from('webhooks').insert([{ name: newName, url: newUrl, events: ['verdict.ready'] }]);
       if (!error) {
         setNewName('');
         setNewUrl('');
@@ -2878,7 +2828,7 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
           <h2 className="text-3xl font-black text-slate-900 tracking-tight">API & Webhooks</h2>
           <p className="text-slate-500 mt-2 font-medium">Manage external integrations and real-time event listeners.</p>
         </div>
-        <button 
+        <button
           onClick={() => setShowAddForm(!showAddForm)}
           className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-indigo-600 transition-colors shadow-md text-sm"
         >
@@ -2892,8 +2842,8 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Friendly Name</label>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="e.g. Slack Notifications"
@@ -2902,8 +2852,8 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Target URL</label>
-              <input 
-                type="url" 
+              <input
+                type="url"
                 value={newUrl}
                 onChange={(e) => setNewUrl(e.target.value)}
                 placeholder="https://hooks.slack.com/services/..."
@@ -2911,7 +2861,7 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
               />
             </div>
           </div>
-          <button 
+          <button
             onClick={handleAdd}
             className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all active:scale-95"
           >
@@ -2930,7 +2880,7 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
             </div>
           </div>
         )}
-        
+
         {loading ? (
           <div className="flex justify-center py-12">
             <Loader2 className="w-8 h-8 animate-spin text-slate-300" />
@@ -2956,7 +2906,7 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
                     <span key={event} className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold">{event}</span>
                   ))}
                 </div>
-                <button 
+                <button
                   onClick={() => handleDelete(webhook.id)}
                   className="p-2 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
                 >
@@ -2975,10 +2925,10 @@ function WebhooksPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean, onUp
 // TRUTH RADAR PAGE
 // ============================================================
 const VERDICT_CONFIG: Record<string, { color: string; bg: string; border: string; dot: string; label: string }> = {
-  'True':               { color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', dot: 'bg-emerald-400', label: 'VERIFIED TRUE' },
-  'False':              { color: 'text-rose-400',    bg: 'bg-rose-500/10',    border: 'border-rose-500/30',    dot: 'bg-rose-400',    label: 'DEBUNKED' },
-  'Partially True':     { color: 'text-amber-400',   bg: 'bg-amber-500/10',   border: 'border-amber-500/30',   dot: 'bg-amber-400',   label: 'MISLEADING' },
-  'Insufficient Evidence': { color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-500/30',   dot: 'bg-slate-400',   label: 'UNVERIFIED' },
+  'True': { color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', dot: 'bg-emerald-400', label: 'VERIFIED TRUE' },
+  'False': { color: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/30', dot: 'bg-rose-400', label: 'DEBUNKED' },
+  'Partially True': { color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', dot: 'bg-amber-400', label: 'MISLEADING' },
+  'Insufficient Evidence': { color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-500/30', dot: 'bg-slate-400', label: 'UNVERIFIED' },
 };
 
 function RadarPage({ isSubscribed, onUpgrade }: { isSubscribed: boolean; onUpgrade: () => void }) {
@@ -3239,51 +3189,45 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
   const fetchAdminData = async () => {
     if (!supabase) return;
     try {
+      const headers = await getAuthHeaders();
       const [uRes, lRes] = await Promise.all([
-        supabase.from('profiles').select('*').limit(20),
-        fetch('/api/admin/access-logs').then(r => r.json()).catch(() => [])
+        supabase.from('profiles').select('*').limit(20), // Use public profiles table
+        fetch('/api/admin/access-logs', { headers }).then(r => r.json())
       ]);
       if (uRes.data) setUsers(uRes.data);
-      // Guard: only set if server returned an array (not an error object)
-      if (Array.isArray(lRes)) {
-        setAccessLogs(lRes);
-      } else {
-        console.warn('access-logs returned non-array:', lRes);
-        setAccessLogs([]);
-      }
+      if (lRes) setAccessLogs(lRes);
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
-      setAccessLogs([]);
     }
   };
 
   const fetchPerformance = async () => {
     if (!supabase) return;
-    try {
-      // Try 'created_at' first (phase0 schema), fall back to no-order if column missing
-      let result = await supabase.from('performance_logs').select('*').order('created_at', { ascending: false }).limit(20);
-      if (result.error) {
-        result = await supabase.from('performance_logs').select('*').limit(20);
-      }
-      if (result.data) setPerformance(result.data);
-    } catch (err) {
-      console.warn('Failed to fetch performance logs:', err);
+    let result = await supabase.from('performance_logs').select('*').order('created_at', { ascending: false }).limit(20);
+    if (result.error) {
+      result = await supabase.from('performance_logs').select('*').limit(20);
     }
+    const { data } = result;
+    if (data) setPerformance(data);
   };
 
   useEffect(() => {
     fetchSettings();
     fetchPerformance();
     fetchAdminData();
-    
-    // Connect to Debug Stream
-    const eventSource = new EventSource('/api/debug-stream');
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      setDebugStream(prev => [data, ...prev].slice(0, 50));
-    };
 
-    return () => eventSource.close();
+    // Connect to Debug Stream
+    let eventSource: EventSource | null = null;
+    getAccessToken().then(token => {
+      if (!token) return;
+      eventSource = new EventSource(`/api/debug-stream?access_token=${encodeURIComponent(token)}`);
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        setDebugStream(prev => [data, ...prev].slice(0, 50));
+      };
+    });
+
+    return () => eventSource?.close();
   }, []);
 
   const handleSave = async () => {
@@ -3309,7 +3253,8 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch('/api/smoke-test', { method: 'POST' });
+      const headers = await getAuthHeaders();
+      const res = await fetch('/api/smoke-test', { method: 'POST', headers });
       const data = await res.json();
       setTestResult(data);
     } catch (err) {
@@ -3330,7 +3275,7 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
           <p className="text-xs text-slate-400 mt-1 font-mono">Signed in as: {user?.email}</p>
         </div>
         <div className="flex items-center gap-3">
-          <button 
+          <button
             onClick={runSmokeTest}
             disabled={testing}
             className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
@@ -3338,7 +3283,7 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
             {testing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Zap className="w-5 h-5" />}
             Run Health Check
           </button>
-          <button 
+          <button
             onClick={onSignOut}
             className="flex items-center gap-2 px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-rose-50 hover:text-rose-600 transition-all"
           >
@@ -3420,8 +3365,8 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                 {Object.entries(routing).map(([role, model]) => (
                   <div key={role} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-2">{role}</label>
-                    <select 
-                      value={model} 
+                    <select
+                      value={model}
                       onChange={(e) => setRouting(prev => ({ ...prev, [role]: e.target.value }))}
                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                     >
@@ -3451,8 +3396,8 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
             </div>
             <div className="p-6 space-y-4">
               <p className={`text-sm font-medium ${testMode ? 'text-amber-700' : 'text-slate-500'}`}>
-                {testMode 
-                  ? '✅ Test mode is active. Click a claim below to simulate the full verification pipeline instantly — no API calls, zero token cost.' 
+                {testMode
+                  ? '✅ Test mode is active. Click a claim below to simulate the full verification pipeline instantly — no API calls, zero token cost.'
                   : 'Enable Test Mode in the Agent Routing Engine above to run preset claims through the full verification UI without burning any API tokens.'
                 }
               </p>
@@ -3470,21 +3415,19 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                       navigator.clipboard.writeText(item.label);
                       alert(`✅ Claim copied to clipboard!\n\nPaste into the verify box on the main dashboard:\n"${item.label}"\n\nExpected: ${item.verdict}`);
                     }}
-                    className={`p-4 rounded-2xl border text-left flex items-start gap-3 transition-all group ${
-                      testMode 
-                        ? 'bg-white border-amber-200 hover:border-amber-400 hover:shadow-md cursor-pointer active:scale-95' 
+                    className={`p-4 rounded-2xl border text-left flex items-start gap-3 transition-all group ${testMode
+                        ? 'bg-white border-amber-200 hover:border-amber-400 hover:shadow-md cursor-pointer active:scale-95'
                         : 'bg-slate-50 border-slate-100 opacity-50 cursor-not-allowed'
-                    }`}
+                      }`}
                   >
                     <span className="text-2xl">{item.icon}</span>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-bold text-slate-800 leading-tight">{item.label}</p>
                       <div className="mt-1.5 flex items-center gap-2">
-                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
-                          item.verdict === 'True' ? 'bg-emerald-100 text-emerald-700' : 
-                          item.verdict === 'False' ? 'bg-rose-100 text-rose-700' :
-                          'bg-amber-100 text-amber-700'
-                        }`}>
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${item.verdict === 'True' ? 'bg-emerald-100 text-emerald-700' :
+                            item.verdict === 'False' ? 'bg-rose-100 text-rose-700' :
+                              'bg-amber-100 text-amber-700'
+                          }`}>
                           Expected: {item.verdict}
                         </span>
                         {testMode && (
@@ -3558,7 +3501,7 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                     <tr key={i} className="hover:bg-slate-50">
                       <td className="px-4 py-3 font-medium">{log.action}</td>
                       <td className="px-4 py-3 text-slate-500">{log.user_id}</td>
-                      <td className="px-4 py-3 text-right text-slate-400">{new Date(log.timestamp).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right text-slate-400">{new Date(log.created_at || log.timestamp).toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -3578,11 +3521,16 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
                 { label: 'Clear Perf Logs', table: 'performance_logs' },
                 { label: 'Reset Settings', table: 'system_settings' }
               ].map(p => (
-                <button 
+                <button
                   key={p.table}
                   onClick={async () => {
                     if (confirm(`Are you sure you want to purge ${p.label}?`)) {
-                      await fetch('/api/admin/purge', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ table: p.table }) });
+                      const authHeaders = await getAuthHeaders();
+                      await fetch('/api/admin/purge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...authHeaders },
+                        body: JSON.stringify({ table: p.table })
+                      });
                       alert(`${p.label} cleared.`);
                     }
                   }}
@@ -3608,11 +3556,10 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
             {debugStream.map((log, i) => (
               <div key={i} className="animate-in slide-in-from-bottom-2 fade-in">
                 <span className="text-slate-500">[{new Date(log.timestamp).toLocaleTimeString()}]</span>{' '}
-                <span className={`font-bold ${
-                  log.role === 'SKEPTIC' ? 'text-rose-400' : 
-                  log.role === 'SUPPORTER' ? 'text-emerald-400' : 
-                  log.role === 'ANALYST' ? 'text-blue-400' : 'text-purple-400'
-                }`}>{log.role}</span>{' '}
+                <span className={`font-bold ${log.role === 'SKEPTIC' ? 'text-rose-400' :
+                    log.role === 'SUPPORTER' ? 'text-emerald-400' :
+                      log.role === 'ANALYST' ? 'text-blue-400' : 'text-purple-400'
+                  }`}>{log.role}</span>{' '}
                 <span className="text-slate-300">{log.status === 'thinking' ? 'is processing evidence...' : `completed using ${log.provider}`}</span>
               </div>
             ))}
@@ -3636,10 +3583,10 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
   );
 }
 
-function AdminLoginPage({ onLogin, loading, setLoading }: { 
-  onLogin: (user: any) => void; 
-  loading: boolean; 
-  setLoading: (v: boolean) => void; 
+function AdminLoginPage({ onLogin, loading, setLoading }: {
+  onLogin: (user: any) => void;
+  loading: boolean;
+  setLoading: (v: boolean) => void;
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -3675,7 +3622,7 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
       } else if (mode === 'signup') {
         const { data, error } = await supabase.auth.signUp({ email, password });
         if (error) { setError(error.message); }
-        else { 
+        else {
           // Manual Sync Fallback: Ensure profile is created even if trigger isn't set up yet
           if (data.user) {
             await supabase.from('profiles').upsert({
@@ -3684,8 +3631,8 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
               role: 'user'
             });
           }
-          setSuccessMsg('Check your email for a confirmation link, then sign in.'); 
-          setMode('signin'); 
+          setSuccessMsg('Check your email for a confirmation link, then sign in.');
+          setMode('signin');
         }
       } else if (mode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
@@ -3704,11 +3651,11 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
     <div className="animate-in fade-in zoom-in-95 duration-500 max-w-md mx-auto mt-16">
       <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-2xl text-center relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
-        
+
         <div className="w-20 h-20 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border border-indigo-100">
           <Shield className="w-10 h-10 text-indigo-600" />
         </div>
-        
+
         <h2 className="text-2xl font-black text-slate-900 mb-1 tracking-tight">
           {mode === 'reset' ? 'Reset Password' : mode === 'signup' ? 'Create Account' : 'Secure Access'}
         </h2>
@@ -3808,7 +3755,7 @@ function UpgradeBanner({ onUpgrade }: { onUpgrade: () => void }) {
         <span className="hidden sm:inline">Unlock full forensic capabilities and API access with LUMINA Pro</span>
         <span className="sm:hidden">Upgrade to LUMINA Pro</span>
       </div>
-      <button 
+      <button
         onClick={onUpgrade}
         className="px-4 py-1.5 bg-white text-indigo-600 rounded-xl hover:bg-indigo-50 transition-all shadow-lg active:scale-95"
       >
@@ -3820,21 +3767,21 @@ function UpgradeBanner({ onUpgrade }: { onUpgrade: () => void }) {
 
 function LoginModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: (user: any) => void }) {
   const [loading, setLoading] = useState(false);
-  
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         onClick={onClose}
         className="absolute inset-0 bg-slate-950/80 backdrop-blur-xl"
       ></motion.div>
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.9, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         className="relative bg-white w-full max-w-md rounded-[3rem] shadow-2xl overflow-hidden border border-white/20"
       >
-        <button 
+        <button
           onClick={onClose}
           className="absolute top-8 right-8 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-10"
         >

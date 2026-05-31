@@ -1,4 +1,4 @@
-import {GoogleGenAI} from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
@@ -8,8 +8,8 @@ import crypto from 'crypto';
 import http from 'http';
 import { createClient } from '@supabase/supabase-js';
 import { EventEmitter } from 'events';
-import {fileURLToPath} from 'url';
-import {createServer as createViteServer} from 'vite';
+import { fileURLToPath } from 'url';
+import { createServer as createViteServer } from 'vite';
 import {
   type AgentResult,
   type AgentRole,
@@ -17,9 +17,10 @@ import {
   normalizeEvidenceProcessingResult,
   normalizeAgentResult,
   normalizeJudgeResult,
+  createFailedAgentResult,
 } from './src/shared/aiSchema';
 
-dotenv.config({path: '.env.local'});
+dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 console.log('--- LUMINA SERVER INITIALIZING ---');
@@ -32,29 +33,54 @@ console.log(`[LUMINA] Starting in ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}
 const geminiKey = process.env.GEMINI_API_KEY || '';
 const groqKey = process.env.GROQ_API_KEY || '';
 const openrouterKey = process.env.OPENROUTER_API_KEY || '';
+const appUrl = process.env.APP_URL || '';
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
-const genAI = new GoogleGenAI({apiKey: geminiKey});
+const genAI = new GoogleGenAI({ apiKey: geminiKey });
 const groq = new OpenAI({
-  apiKey: groqKey,
+  apiKey: groqKey || 'not-configured',
   baseURL: 'https://api.groq.com/openai/v1',
 });
 const openrouter = new OpenAI({
-  apiKey: openrouterKey,
+  apiKey: openrouterKey || 'not-configured',
   baseURL: 'https://openrouter.ai/api/v1',
 });
 
 // Initialize Supabase
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseKey = supabaseServiceRoleKey || supabaseAnonKey;
+const supabase = supabaseUrl && supabaseKey
+  ? createClient(supabaseUrl, supabaseKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  : null;
+const supabaseAuth = supabaseUrl && supabaseAnonKey
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  : null;
+
+type AuthContext = {
+  id: string;
+  role?: string | null;
+  email?: string | null;
+  is_api?: boolean;
+};
+
+type AuthedRequest = express.Request & { user?: AuthContext };
 
 const debugEmitter = new EventEmitter();
 
 async function logPerformance(event: string, startTime: number, provider: string, tokens = 0) {
   if (!supabase) return;
   const latency = Date.now() - startTime;
-  const cost = (tokens / 1000) * (provider === 'groq' ? 0.0001 : 0.001); 
-  
+  const cost = (tokens / 1000) * (provider === 'groq' ? 0.0001 : 0.001);
+
   try {
     await supabase.from('performance_logs').insert([{
       event,
@@ -62,7 +88,7 @@ async function logPerformance(event: string, startTime: number, provider: string
       tokens,
       cost,
       provider,
-      timestamp: new Date().toISOString()
+      created_at: new Date().toISOString()
     }]);
   } catch (err) {
     console.error('Failed to log performance:', err);
@@ -76,7 +102,7 @@ async function logAccess(userId: string, action: string, metadata: any = {}) {
       user_id: userId,
       action,
       metadata,
-      timestamp: new Date().toISOString()
+      created_at: new Date().toISOString()
     }]);
   } catch (err) {
     console.error('Failed to log access:', err);
@@ -119,28 +145,17 @@ async function logUsage(userId: string | null, eventType: string, domain: string
   }
 }
 
-async function isTestMode(userId: string | null) {
+async function isTestMode(user: AuthContext | null) {
   if (!supabase) return false;
-  
-  // Master Backdoor Bypass
-  if (userId === 'dev-master-uuid') return (await getDynamicKey('test_mode', process.env.TEST_MODE || 'false')) === 'true';
-  if (!userId) return false;
 
-  // Verify user is an admin
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', userId)
-    .single();
-    
-  if (profile?.role !== 'admin') return false;
+  if (!user?.id || user.role !== 'admin') return false;
 
   return (await getDynamicKey('test_mode', process.env.TEST_MODE || 'false')) === 'true';
 }
 
 async function triggerWebhooks(event: string, payload: any) {
   if (!supabaseUrl || !supabaseAnonKey || !supabase) return;
-  
+
   try {
     const { data: webhooks, error } = await supabase
       .from('webhooks')
@@ -168,45 +183,45 @@ async function triggerWebhooks(event: string, payload: any) {
             });
 
             if (!res.ok && currentRetry < 2) {
-                throw new Error(`HTTP ${res.status}`);
+              throw new Error(`HTTP ${res.status}`);
             }
-            
+
             // Log success
             await supabase!.from('webhook_logs').insert([{
-                webhook_id: w.id,
-                event,
-                status: 'delivered',
-                attempt_count: currentRetry + 1,
-                latency_ms: Date.now() - startTime,
-                payload
+              webhook_id: w.id,
+              event,
+              status: 'delivered',
+              attempt_count: currentRetry + 1,
+              latency_ms: Date.now() - startTime,
+              payload
             }]);
-            
+
             console.log(`Webhook ${w.name} delivered successfully on attempt ${currentRetry + 1}`);
           } catch (err: any) {
             if (currentRetry < 2) {
-                const delay = Math.pow(2, currentRetry) * 2000; // 2s, 4s, 8s
-                console.warn(`Webhook ${w.name} failed (Attempt ${currentRetry + 1}). Retrying in ${delay}ms...`);
-                
-                await supabase!.from('webhook_logs').insert([{
-                    webhook_id: w.id,
-                    event,
-                    status: 'retrying',
-                    attempt_count: currentRetry + 1,
-                    last_error: err.message,
-                    payload
-                }]);
-                
-                setTimeout(() => attemptCall(currentRetry + 1), delay);
+              const delay = Math.pow(2, currentRetry) * 2000; // 2s, 4s, 8s
+              console.warn(`Webhook ${w.name} failed (Attempt ${currentRetry + 1}). Retrying in ${delay}ms...`);
+
+              await supabase!.from('webhook_logs').insert([{
+                webhook_id: w.id,
+                event,
+                status: 'retrying',
+                attempt_count: currentRetry + 1,
+                last_error: err.message,
+                payload
+              }]);
+
+              setTimeout(() => attemptCall(currentRetry + 1), delay);
             } else {
-                console.error(`Webhook ${w.name} failed after maximum retries:`, err);
-                await supabase!.from('webhook_logs').insert([{
-                    webhook_id: w.id,
-                    event,
-                    status: 'failed',
-                    attempt_count: currentRetry + 1,
-                    last_error: err.message,
-                    payload
-                }]);
+              console.error(`Webhook ${w.name} failed after maximum retries:`, err);
+              await supabase!.from('webhook_logs').insert([{
+                webhook_id: w.id,
+                event,
+                status: 'failed',
+                attempt_count: currentRetry + 1,
+                last_error: err.message,
+                payload
+              }]);
             }
           }
         };
@@ -217,13 +232,32 @@ async function triggerWebhooks(event: string, payload: any) {
   }
 }
 
+function getBearerToken(req: express.Request) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+  if (scheme?.toLowerCase() === 'bearer' && token) return token;
+  const queryToken = req.query.access_token;
+  return typeof queryToken === 'string' && queryToken ? queryToken : null;
+}
+
+async function hydrateUserRole(user: AuthContext): Promise<AuthContext> {
+  if (!supabase) return user;
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', user.id)
+    .single();
+  return { ...user, role: profile?.role || user.role || null };
+}
+
 // Enterprise API Key Middleware
-async function authenticateApiKey(req: express.Request, res: express.Response, next: express.NextFunction) {
+async function authenticateApiKey(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
   const apiKey = req.headers['x-api-key'] as string;
-  
-  // If no API key header, allow through (auth handled by Supabase JWT elsewhere)
-  if (!apiKey) return next();
-  
+
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key is required.' });
+  }
+
   // If supabase is down, fail hard — don't silently pass unauthenticated requests
   if (!supabase) return res.status(503).json({ error: 'Auth service unavailable. Cannot validate API key.' });
 
@@ -243,16 +277,61 @@ async function authenticateApiKey(req: express.Request, res: express.Response, n
     if (!validKey) return res.status(401).json({ error: 'Invalid API Key' });
 
     // Attach user context to request
-    (req as any).user = { id: validKey.user_id, is_api: true };
-    
+    req.user = await hydrateUserRole({ id: validKey.user_id, is_api: true });
+
     // Fire-and-forget last_used update
     supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', validKey.id).then();
-    
+
     next();
   } catch (err) {
     console.error('API key auth error:', err);
     res.status(401).json({ error: 'Authentication failed' });
   }
+}
+
+async function authenticateOptionalUser(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
+  const apiKey = req.headers['x-api-key'] as string | undefined;
+  if (apiKey) return authenticateApiKey(req, res, next);
+
+  const token = getBearerToken(req);
+  if (!token) return next();
+
+  if (!supabaseAuth) {
+    return res.status(503).json({ error: 'Auth service unavailable. Cannot validate session.' });
+  }
+
+  try {
+    const { data, error } = await supabaseAuth.auth.getUser(token);
+    if (error || !data.user) {
+      return res.status(401).json({ error: 'Invalid or expired session.' });
+    }
+    req.user = await hydrateUserRole({
+      id: data.user.id,
+      email: data.user.email,
+    });
+    next();
+  } catch (err) {
+    console.error('Session auth error:', err);
+    res.status(401).json({ error: 'Authentication failed' });
+  }
+}
+
+async function requireUser(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
+  await authenticateOptionalUser(req, res, () => {
+    if (!req.user?.id) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    next();
+  });
+}
+
+async function requireAdmin(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
+  await requireUser(req, res, () => {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required.' });
+    }
+    next();
+  });
 }
 
 async function getDynamicKey(key: string, envFallback: string) {
@@ -267,10 +346,13 @@ async function getDynamicKey(key: string, envFallback: string) {
 
 async function generateEmbedding(text: string) {
   try {
-    // text-embedding-004 is optimized for semantic search (768 dims)
-    const model = (genAI as any).getGenerativeModel({ model: "text-embedding-004" });
-    const result = await model.embedContent(text);
-    return result.embedding.values;
+    // @google/genai v1.x API — use models.embedContent
+    const result = await (genAI as any).models.embedContent({
+      model: 'text-embedding-004',
+      contents: [text],
+    });
+    // Response shape: { embedding: { values: number[] } }
+    return result?.embedding?.values ?? null;
   } catch (error) {
     console.error('Embedding generation failed:', error);
     return null;
@@ -294,11 +376,11 @@ async function findSimilarClaims(embedding: number[], limit = 3) {
 }
 
 const MODELS = {
-  SKEPTIC:   'google/gemini-1.5-flash',
-  SUPPORTER: 'google/gemini-1.5-flash',
-  ANALYST:   'google/gemini-1.5-flash',
-  JUDGE:     'google/gemini-1.5-flash',
-  EVIDENCE:  'google/gemini-1.5-flash', // Evidence processor uses same model pool
+  SKEPTIC: 'google/gemini-2.0-flash',
+  SUPPORTER: 'google/gemini-2.0-flash',
+  ANALYST: 'google/gemini-2.0-flash',
+  JUDGE: 'google/gemini-2.0-flash',
+  EVIDENCE: 'google/gemini-2.0-flash',
 } as const;
 
 async function getModelForRole(role: string) {
@@ -307,86 +389,101 @@ async function getModelForRole(role: string) {
 }
 
 const SKEPTIC_PROMPT = `You are Agent A: The Skeptic (Forensic Auditor). Your role is to RIGOROUSLY CHALLENGE the claim.
+
+CRITICAL RULE: Base your analysis on ACTUAL FACTS. If a claim is historically or scientifically well-established as false, say so clearly with high confidence. Do NOT be skeptical of settled facts just to play a role.
+
 Follow this reasoning chain:
-1. LITERAL PARSING: Identify the specific factual assertion.
-2. COUNTER-SEARCH: Find debunking data, expert rebuttals, or conflicting evidence.
+1. FACT-CHECK FIRST: Is this claim contradicted by established scientific consensus, historical record, or authoritative sources?
+2. COUNTER-SEARCH: Use the provided evidence to find debunking data, expert rebuttals, or conflicting evidence.
 3. LOGICAL AUDIT: Identify fallacies (e.g., cherry-picking, correlation/causation).
 4. SOURCE QUALITY: Evaluate if supporting sources are biased or unreliable.
-5. CALIBRATED CONFIDENCE: Score confidence based on the strength of counter-evidence.
+5. CALIBRATED CONFIDENCE: Score confidence based on the strength of counter-evidence. High confidence (80-100) when debunking is clear.
 
 Output ONLY a JSON object:
 {
   "agent": "Skeptic",
   "stance": "AGAINST",
   "confidence": 0-100,
-  "main_argument": "...",
-  "evidence": [{"title": "...", "source": "...", "url": "https://...", "finding": "..."}],
+  "main_argument": "One clear, factual paragraph explaining WHY this claim is challenged or false.",
+  "evidence": [{"title": "...", "source": "...", "url": "https://...", "finding": "Specific factual finding that challenges the claim."}],
   "logical_fallacies": ["Fallacy 1", "Fallacy 2"],
   "debunking_sources": [{"title": "...", "source": "...", "url": "https://...", "finding": "..."}],
-  "weakness_of_claim": "..."
+  "weakness_of_claim": "...",
+  "verdict_hint": "TRUE | FALSE | MISLEADING | UNVERIFIED"
 }`;
 
 const SUPPORTER_PROMPT = `You are Agent B: The Supporter (Forensic Advocate). Your role is to find a DEFENSIBLE case for the claim.
+
+CRITICAL RULE: Be HONEST about the evidence. If the claim is factually false or unsupported, your confidence should be LOW (0-30). Do NOT fabricate support for claims that lack real evidence. Only advocate for claims that have genuine supporting data.
+
 Follow this reasoning chain:
-1. CHARITABLE INTERPRETATION: Find the most accurate reading of the claim.
-2. EVIDENCE SEARCH: Find peer-reviewed studies, government data, or expert consensus.
-3. NUANCE CHECK: Identify any critical caveats or context missing from the claim.
-4. PARTIAL CREDIT: If the claim is only partially true, specify which parts are defensible.
-5. SOURCE AUTHORITY: Score confidence based on the reliability of supporting data.
+1. FACT VERIFICATION: Does this claim align with verified scientific, historical, or official data?
+2. CHARITABLE INTERPRETATION: Find the most accurate reading of the claim.
+3. EVIDENCE SEARCH: Use the provided evidence to find peer-reviewed studies, government data, or expert consensus.
+4. NUANCE CHECK: Identify any critical caveats or context missing from the claim.
+5. PARTIAL CREDIT: If the claim is only partially true, specify which parts are defensible.
+6. SOURCE AUTHORITY: Score confidence based on the reliability of supporting data.
 
 Output ONLY a JSON object:
 {
   "agent": "Supporter",
   "stance": "FOR",
   "confidence": 0-100,
-  "main_argument": "...",
-  "evidence": [{"title": "...", "source": "...", "url": "https://...", "finding": "..."}],
+  "main_argument": "One honest paragraph about what is factually supportable in this claim.",
+  "evidence": [{"title": "...", "source": "...", "url": "https://...", "finding": "Specific factual finding that supports the claim."}],
   "caveats": ["Caveat 1", "Caveat 2"],
   "partial_support_score": 0-100,
   "strongest_point": "..."
 }`;
 
-const ANALYST_PROMPT = `You are Agent C: The Analyst (Forensic Data Scientist). Your role is to OBJECTIVELY synthesize data.
+const ANALYST_PROMPT = `You are Agent C: The Analyst (Forensic Data Scientist). Your role is to OBJECTIVELY synthesize data and deliver an ACCURATE verdict recommendation.
+
+CRITICAL RULE: Your verdict_hint must reflect ACTUAL TRUTH, not a diplomatic middle ground. Use your training knowledge AND the provided evidence. If a claim is clearly false (e.g., conspiracy theories, debunked myths), say FALSE with high factual_accuracy_score. If clearly true, say TRUE.
+
 Follow this reasoning chain:
-1. DOMAIN CLASSIFICATION: Is this Medical, Historical, Scientific, etc.?
-2. CONSENSUS CHECK: Does an expert consensus exist for this claim?
-3. EVIDENCE WEIGHTING: Compare the credibility of sources found by other agents.
-4. CONFLICT DETECTION: Identify the 'crux of the dispute' between agents.
-5. VERDICT RECOMMENDATION: Propose a verdict with a confidence range.
+1. DOMAIN CLASSIFICATION: Is this Medical, Historical, Scientific, Political, etc.?
+2. KNOWLEDGE ANCHOR: What does established scientific/historical consensus say about this?
+3. CONSENSUS CHECK: Does expert consensus exist? Is it strong or contested?
+4. EVIDENCE QUALITY: Rate the credibility of sources in the provided evidence.
+5. VERDICT RECOMMENDATION: Give a clear, accurate verdict. Do NOT default to UNVERIFIED for well-known facts.
 
 Output ONLY a JSON object:
 {
   "agent": "Analyst",
   "stance": "NEUTRAL",
   "factual_accuracy_score": 0-100,
-  "main_analysis": "...",
-  "domain": "Medical | Historical | Scientific | Tech | Social",
+  "main_analysis": "Objective multi-paragraph analysis citing specific evidence and consensus.",
+  "domain": "Medical | Historical | Scientific | Tech | Social | Political",
   "consensus_exists": true/false,
-  "consensus_summary": "...",
-  "crux_of_dispute": "...",
+  "consensus_summary": "What mainstream experts and institutions say about this.",
+  "crux_of_dispute": "The single most important point of disagreement, if any.",
   "verdict_hint": "TRUE | FALSE | MISLEADING | UNVERIFIED",
   "evidence": [{"title": "...", "source": "...", "url": "https://...", "finding": "..."}],
-  "key_context": "..."
+  "key_context": "Critical context the judge needs to know."
 }`;
 
-const JUDGE_PROMPT = `You are the Supreme Judge (Forensic AI). Evaluate the provided 'JUDGE BRIEF' from three expert agents.
+const JUDGE_PROMPT = `You are the Supreme Judge (Forensic AI). Your ONLY goal is to determine the FACTUAL TRUTH of the claim based on the Judge Brief provided.
 
 JUDGMENT PROTOCOL:
-1. ANALYST ANCHOR: Use the Analyst's domain and consensus check as your primary reference.
-2. EVIDENCE SYNTHESIS: Weigh the Skeptic's fallacy findings against the Supporter's evidence.
-3. CONFLICT RESOLUTION: If agents disagree, prioritize the Analyst's verdict_hint if it aligns with the weight of cited evidence.
-4. INTERNAL KNOWLEDGE: For clear public records (e.g., Apollo 11), use your internal knowledge if the agents failed to find external data.
-5. TIEBREAKER: For SPLIT votes, use the stance that has the most credible (9-10/10) sources.
+1. TRUTH FIRST: Use your own knowledge of established facts. If a claim contradicts scientific consensus, historical record, or verifiable data, rule FALSE regardless of how agents argue.
+2. ANALYST ANCHOR: The Analyst's verdict_hint and consensus_summary are your most reliable signal.
+3. EVIDENCE QUALITY: Prefer evidence from .gov, .edu, peer-reviewed journals, and reputable institutions over opinion pieces.
+4. CONFIDENCE CALIBRATION:
+   - TRUE/FALSE with strong consensus → confidence 85-99
+   - MISLEADING (partially true but missing key context) → confidence 60-85
+   - UNVERIFIED (genuinely no clear evidence) → confidence 30-60
+5. VERDICT COLORS: green=TRUE, red=FALSE, yellow=MISLEADING, grey=UNVERIFIED
+6. DO NOT default to UNVERIFIED for claims with clear established answers.
 
 Output ONLY a JSON object:
 {
   "verdict": "TRUE | FALSE | MISLEADING | UNVERIFIED",
   "confidence_score": 0-100,
-  "confidence_reasoning": "...",
-  "final_summary": "Summarize the truth in 2-3 sentences.",
-  "key_evidence": ["Evidence 1", "Evidence 2"],
+  "confidence_reasoning": "Explain specifically WHY this verdict, citing the strongest evidence.",
+  "final_summary": "2-3 sentence accurate summary of the truth. Be direct and factual.",
+  "key_evidence": ["Specific fact 1", "Specific fact 2", "Specific fact 3"],
   "agent_agreement": "UNANIMOUS | MAJORITY | SPLIT",
-  "minority_view": "Summarize the dissenting view.",
+  "minority_view": "Summarize the dissenting view if any.",
   "verdict_color": "green | red | yellow | grey"
 }`;
 
@@ -482,7 +579,7 @@ async function searchWeb(query: string): Promise<SearchResult[]> {
 
   const html = await response.text();
   const results: SearchResult[] = [];
-  
+
   // More robust pattern matching for DDG HTML
   const resultPattern = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<a|<div)[^>]+class="result__snippet"[^>]*>([\s\S]*?)(?:<\/a>|<\/div>)/g;
   let match: RegExpExecArray | null;
@@ -596,34 +693,26 @@ function dedupeSearchResults(results: SearchResult[]) {
 async function callGemini(modelName: string, systemInstruction: string, prompt: string, useSearch = false) {
   requireApiKey(geminiKey, 'GEMINI_API_KEY');
 
-  try {
-    // Use the new @google/genai SDK style
-    const result = await (genAI as any).models.generateContent({
-      model: modelName,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-        tools: useSearch ? [{ googleSearch: {} }] : [],
-      }
-    });
-    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || result?.text || '{}';
-    return parseJsonResponse(text);
-  } catch (sdkErr) {
-    // Fallback to legacy getGenerativeModel if new API not available
-    console.warn('[Gemini] New SDK failed, trying legacy API:', sdkErr);
-    const model = (genAI as any).getGenerativeModel({
-      model: modelName,
-      systemInstruction,
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
-    });
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      tools: useSearch ? [{ googleSearchRetrieval: {} } as any] : []
-    });
-    return parseJsonResponse(result.response.text() || '{}');
+  // @google/genai v1.x — models.generateContent() is the correct method.
+  // getGenerativeModel() is NOT available in this SDK.
+  const config: any = {
+    systemInstruction,
+    responseMimeType: 'application/json',
+    temperature: 0.2,
+  };
+  if (useSearch) {
+    config.tools = [{ googleSearch: {} }];
   }
+
+  const result = await (genAI as any).models.generateContent({
+    model: modelName,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config,
+  });
+
+  // Extract text from candidates[0].content.parts[0].text
+  const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+  return parseJsonResponse(text);
 }
 
 async function callOpenAICompatible(
@@ -635,11 +724,11 @@ async function callOpenAICompatible(
   const response = await client.chat.completions.create({
     model,
     messages: [
-      {role: 'system', content: systemInstruction},
-      {role: 'user', content: prompt},
+      { role: 'system', content: systemInstruction },
+      { role: 'user', content: prompt },
     ],
     temperature: 0.2,
-    response_format: {type: 'json_object'},
+    response_format: { type: 'json_object' },
   });
 
   return parseJsonResponse(response.choices[0].message.content || '{}');
@@ -739,23 +828,26 @@ async function callModelWithFallback(role: AgentRole | 'JUDGE' | 'EVIDENCE', sys
   const dynamicGroqKey = await getDynamicKey('groq_key', groqKey);
   const dynamicORKey = await getDynamicKey('or_key', openrouterKey);
   const dynamicGeminiKey = await getDynamicKey('gemini_key', geminiKey);
-  
+
   // Fetch configured model for this role
   const configuredModel = await getModelForRole(role);
 
-  // Priority 1: Groq (Fastest)
+  // Priority 1: Groq (Fastest) — use same strong model for ALL roles to ensure balanced debate quality
   try {
     if (dynamicGroqKey) {
       const client = dynamicGroqKey === groqKey ? groq : new OpenAI({ apiKey: dynamicGroqKey, baseURL: 'https://api.groq.com/openai/v1' });
-      // Use configured model if it looks like a Groq model, otherwise use default
-      const groqModel = configuredModel.includes('/') ? (role === 'SUPPORTER' ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile') : configuredModel;
+      // Always use the 70B model for all roles — the 8B model produces low-quality, unbalanced debate
+      const groqModel = configuredModel.includes('/') ? 'llama-3.3-70b-versatile' : configuredModel;
       const res = await callOpenAICompatible(client, groqModel, systemInstruction, prompt);
       await logPerformance(`${role}_MODEL_CALL`, startTime, 'groq', 500);
       debugEmitter.emit('debug', { role, status: 'done', provider: 'groq', timestamp: new Date().toISOString() });
       return res;
     }
-  } catch (err) {
-    console.warn(`Groq failed for ${role}, trying OpenRouter fallback...`);
+  } catch (err: any) {
+    const isRateLimit = err?.status === 429 || String(err?.message || '').includes('rate limit');
+    console.warn(`Groq failed for ${role} (${isRateLimit ? 'rate limit' : 'error'}), trying OpenRouter fallback...`);
+    // Small backoff on rate limit before trying next provider
+    if (isRateLimit) await new Promise(r => setTimeout(r, 1000));
   }
 
   // Priority 2: OpenRouter (Reliable)
@@ -793,8 +885,8 @@ async function callModelWithFallback(role: AgentRole | 'JUDGE' | 'EVIDENCE', sys
 
 async function callAgent(role: AgentRole, claim: string, similarClaims: any[] = []) {
   // Extract clean claim if it has [Domain Context] markers
-  const cleanClaim = claim.includes('Claim to verify:') 
-    ? claim.split('Claim to verify:').pop()?.trim() || claim 
+  const cleanClaim = claim.includes('Claim to verify:')
+    ? claim.split('Claim to verify:').pop()?.trim() || claim
     : claim;
 
   const [wikipediaResults, webResults] = await Promise.all([
@@ -807,7 +899,7 @@ async function callAgent(role: AgentRole, claim: string, similarClaims: any[] = 
   const searchResults = dedupeSearchResults([...wikipediaResults, ...webResults]).slice(0, 10);
   const processedEvidence = await processEvidence(claim, searchResults).catch(() => normalizeEvidenceProcessingResult({}));
 
-  const memoryContext = similarClaims.length > 0 
+  const memoryContext = similarClaims.length > 0
     ? `\n\n[Agent Memory - Similar Past Claims]:\n${similarClaims.map(c => `- Claim: "${c.claim}" | Verdict: ${c.verdict.verdict}`).join('\n')}`
     : '';
 
@@ -828,33 +920,64 @@ Processed evidence: ${JSON.stringify(processedEvidence)}`;
 }
 
 async function callJudge(claim: string, agents: AgentResult[]) {
-  // Build a structured Judge Brief to extract high-signal data from agent noise
   const skeptic = agents.find(a => a.agent === 'Skeptic');
   const supporter = agents.find(a => a.agent === 'Supporter');
   const analyst = agents.find(a => a.agent === 'Analyst');
 
+  // Collect all evidence across agents, sorted by credibility
+  const allEvidence = agents
+    .flatMap(a => (a.evidence || []).map(e => ({ ...e, _agent: a.agent })))
+    .filter(e => e.finding && e.source)
+    .slice(0, 8);
+
+  const allProcessedEvidence = agents
+    .flatMap(a => a.processed_evidence || [])
+    .filter(e => e.credibility >= 6)
+    .sort((a, b) => b.credibility - a.credibility)
+    .slice(0, 5);
+
   const judgeBrief = {
     claim,
-    skeptic: skeptic ? {
-      argument: skeptic.main_argument,
-      fallacies: skeptic.logical_fallacies || [],
-      confidence: skeptic.confidence
-    } : 'Skeptic failed to respond.',
-    supporter: supporter ? {
-      argument: supporter.main_argument,
-      caveats: supporter.caveats || [],
-      support_score: supporter.partial_support_score,
-      confidence: supporter.confidence
-    } : 'Supporter failed to respond.',
-    analyst: analyst ? {
-      analysis: analyst.main_analysis,
-      domain: analyst.domain,
-      consensus: analyst.consensus_exists,
-      consensus_summary: analyst.consensus_summary,
-      crux: analyst.crux_of_dispute,
-      verdict_hint: analyst.verdict_hint
-    } : 'Analyst failed to respond.',
-    top_evidence: Array.from(new Set(agents.flatMap(a => (a.evidence || []).map(e => e.source)))).slice(0, 5)
+    verdict_hints: {
+      skeptic_verdict_hint: (skeptic as any)?.verdict_hint || null,
+      analyst_verdict_hint: analyst?.verdict_hint || null,
+    },
+    agents: {
+      skeptic: skeptic ? {
+        argument: skeptic.main_argument,
+        confidence: skeptic.confidence,
+        fallacies: (skeptic.logical_fallacies || []).slice(0, 3),
+        weakness_of_claim: skeptic.weakness_of_claim,
+        key_evidence: (skeptic.evidence || []).slice(0, 3).map(e => `[${e.source}] ${e.finding}`),
+      } : 'Skeptic failed to respond.',
+      supporter: supporter ? {
+        argument: supporter.main_argument,
+        confidence: supporter.confidence,
+        partial_support_score: supporter.partial_support_score,
+        caveats: (supporter.caveats || []).slice(0, 3),
+        key_evidence: (supporter.evidence || []).slice(0, 3).map(e => `[${e.source}] ${e.finding}`),
+      } : 'Supporter failed to respond.',
+      analyst: analyst ? {
+        analysis: analyst.main_analysis,
+        domain: analyst.domain,
+        consensus_exists: analyst.consensus_exists,
+        consensus_summary: analyst.consensus_summary,
+        crux_of_dispute: analyst.crux_of_dispute,
+        verdict_hint: analyst.verdict_hint,
+        factual_accuracy_score: analyst.factual_accuracy_score,
+        key_context: analyst.key_context,
+      } : 'Analyst failed to respond.',
+    },
+    evidence_pool: {
+      high_credibility_sources: allProcessedEvidence.map(e => ({
+        summary: e.summary,
+        source: e.source,
+        stance: e.stance,
+        credibility: `${e.credibility}/10`,
+      })),
+      raw_evidence: allEvidence.map(e => `[${e._agent}][${e.source}] ${e.finding}`),
+      overall_evidence_strength: analyst?.evidence_summary?.overall_strength || 'Unknown',
+    },
   };
 
   const prompt = `JUDGE BRIEF:\n${JSON.stringify(judgeBrief, null, 2)}`;
@@ -865,10 +988,46 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Unexpected server error.';
 }
 
+type RateBucket = { count: number; resetAt: number };
+const verifyRateBuckets = new Map<string, RateBucket>();
+
+function rateLimitVerify(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
+  const windowMs = 15 * 60 * 1000;
+  const now = Date.now();
+  const identity = req.user?.id ? `user:${req.user.id}` : `ip:${req.ip}`;
+  const limit = req.user?.id ? 120 : 20;
+  const bucket = verifyRateBuckets.get(identity);
+
+  if (!bucket || bucket.resetAt <= now) {
+    verifyRateBuckets.set(identity, { count: 1, resetAt: now + windowMs });
+    return next();
+  }
+
+  bucket.count += 1;
+  if (bucket.count > limit) {
+    res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+    return res.status(429).json({ error: 'Too many verification requests. Please try again later.' });
+  }
+
+  next();
+}
+
+function allowedCorsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+  if (!origin) return callback(null, true);
+
+  const allowedOrigins = new Set([
+    ...corsOrigins,
+    ...(appUrl ? [appUrl] : []),
+    ...(!isProduction ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : []),
+  ]);
+
+  callback(null, allowedOrigins.has(origin));
+}
+
 const app = express();
-// NOTE: wildcard origin + credentials=true is blocked by browsers. Use explicit origin or remove credentials.
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({limit: '1mb'}));
+app.set('trust proxy', 1);
+app.use(cors({ origin: allowedCorsOrigin, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
 
 // Request Logger for Debugging
 app.use((req, res, next) => {
@@ -959,15 +1118,15 @@ startRadarTicker();
 // Unified Server & Vite Initialization
 const httpServer = http.createServer(app);
 
-apiRouter.post('/agent', async (req, res) => {
+apiRouter.post('/agent', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
   try {
-    const {role, claim, userId = null} = req.body as {role?: AgentRole; claim?: string; userId?: string | null};
+    const { role, claim } = req.body as { role?: AgentRole; claim?: string };
     if (!role || !['SKEPTIC', 'SUPPORTER', 'ANALYST'].includes(role) || !claim?.trim()) {
-      res.status(400).json({error: 'A valid role and claim are required.'});
+      res.status(400).json({ error: 'A valid role and claim are required.' });
       return;
     }
 
-    if (await isTestMode(userId)) {
+    if (await isTestMode(req.user || null)) {
       const simulated = simulateFactCheck(claim.trim());
       return res.json({
         agent: role.charAt(0) + role.slice(1).toLowerCase(),
@@ -979,28 +1138,38 @@ apiRouter.post('/agent', async (req, res) => {
       });
     }
 
-    res.json(await callAgent(role, claim.trim(), []));
+    try {
+      // Stagger agent calls slightly to avoid simultaneous rate-limit hits on shared API keys
+      const agentIndex = ['SKEPTIC', 'SUPPORTER', 'ANALYST'].indexOf(role);
+      if (agentIndex > 0) await new Promise(r => setTimeout(r, agentIndex * 400));
+
+      res.json(await callAgent(role, claim.trim(), []));
+    } catch (agentError) {
+      // Return a structured failed result instead of a 500 crash
+      // This lets the judge still run with the agents that succeeded
+      console.error(`Agent ${role} failed, returning degraded result:`, agentError);
+      res.json(createFailedAgentResult(role, getErrorMessage(agentError)));
+    }
   } catch (error) {
     console.error('Agent request failed:', error);
-    res.status(500).json({error: getErrorMessage(error)});
+    res.status(500).json({ error: getErrorMessage(error) });
   }
 });
 
-apiRouter.post('/judge', async (req, res) => {
+apiRouter.post('/judge', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
   try {
-    const {claim, agents, userId = null} = req.body as {
+    const { claim, agents } = req.body as {
       claim?: string;
       agents?: AgentResult[];
-      userId?: string | null;
     };
 
     // Judge needs at least 1 valid agent to synthesize a verdict
     if (!claim?.trim() || !Array.isArray(agents) || agents.length < 1) {
-      res.status(400).json({error: 'Claim and at least one agent result are required.'});
+      res.status(400).json({ error: 'Claim and at least one agent result are required.' });
       return;
     }
 
-    if (await isTestMode(userId)) {
+    if (await isTestMode(req.user || null)) {
       const simulated = simulateFactCheck(claim.trim());
       return res.json({
         verdict: simulated.verdict.toUpperCase(),
@@ -1014,27 +1183,33 @@ apiRouter.post('/judge', async (req, res) => {
     }
 
     const judgeRes = await callJudge(claim.trim(), agents);
-    
+
     // Trigger webhooks asynchronously
     triggerWebhooks('verdict.ready', { claim: claim.trim(), result: judgeRes });
-    
+
     res.json(judgeRes);
   } catch (error) {
     console.error('Judge request failed:', error);
-    res.status(500).json({error: getErrorMessage(error)});
+    res.status(500).json({ error: getErrorMessage(error) });
   }
 });
 
-apiRouter.post('/verify', authenticateApiKey, async (req, res) => {
+apiRouter.post('/verify', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
   const startTime = Date.now();
   try {
-    const {claim, domain = 'GENERAL', userId = null} = req.body as {claim?: string; domain?: string; userId?: string | null};
+    const { claim, domain = 'GENERAL' } = req.body as { claim?: string; domain?: string };
     if (!claim?.trim()) {
-      res.status(400).json({error: 'Claim is required.'});
+      res.status(400).json({ error: 'Claim is required.' });
       return;
     }
 
     const currentClaim = claim.trim();
+    if (currentClaim.length > 5000) {
+      res.status(413).json({ error: 'Claim is too long. Please keep it under 5,000 characters.' });
+      return;
+    }
+
+    const userId = req.user?.id || null;
     const cacheKey = generateCacheKey(currentClaim, domain);
 
     // 1. Check Cache
@@ -1059,14 +1234,14 @@ apiRouter.post('/verify', authenticateApiKey, async (req, res) => {
     let embedding = null;
     let similarClaims = [];
     if (supabase) {
-       embedding = await generateEmbedding(currentClaim);
-       if (embedding) {
-         similarClaims = await findSimilarClaims(embedding);
-       }
+      embedding = await generateEmbedding(currentClaim);
+      if (embedding) {
+        similarClaims = await findSimilarClaims(embedding);
+      }
     }
 
     // 3. TEST MODE: Instant Simulation to bypass rate limits (Admins Only)
-    if (await isTestMode(userId)) {
+    if (await isTestMode(req.user || null)) {
       const simulated = simulateFactCheck(currentClaim);
       // Only simulate if we got a simulated result (e.g. preset match or general test mode logic)
       if (simulated.simulated) {
@@ -1082,12 +1257,12 @@ apiRouter.post('/verify', authenticateApiKey, async (req, res) => {
       callAgent('ANALYST', currentClaim, similarClaims).catch((e) => ({ agent: 'Analyst', stance: 'FAILED', error: e.message })),
     ]);
 
-    const validAgents = [skepticRaw, supporterRaw, analystRaw].filter((r): r is AgentResult => 
+    const validAgents = [skepticRaw, supporterRaw, analystRaw].filter((r): r is AgentResult =>
       r !== null && !('error' in r) && r.stance !== 'FAILED'
     );
 
     if (validAgents.length < 1) {
-      res.status(500).json({error: 'All agents failed to produce results.'});
+      res.status(500).json({ error: 'All agents failed to produce results.' });
       return;
     }
 
@@ -1131,20 +1306,17 @@ apiRouter.post('/verify', authenticateApiKey, async (req, res) => {
 
   } catch (error) {
     console.error('Verify request failed:', error);
-    res.status(500).json({error: getErrorMessage(error)});
+    res.status(500).json({ error: getErrorMessage(error) });
   }
 });
 
-apiRouter.get('/usage/summary', async (req, res) => {
+apiRouter.get('/usage/summary', requireUser, async (req: AuthedRequest, res) => {
   try {
-    const {userId, days = 30} = req.query as {userId?: string; days?: string};
-    if (!userId) {
-      res.status(400).json({error: 'userId is required.'});
-      return;
-    }
+    const { days = 30 } = req.query as { days?: string };
+    const userId = req.user!.id;
 
     if (!supabase) {
-      res.status(500).json({error: 'Supabase not initialized.'});
+      res.status(500).json({ error: 'Supabase not initialized.' });
       return;
     }
 
@@ -1188,20 +1360,20 @@ apiRouter.get('/usage/summary', async (req, res) => {
     res.json(summary);
   } catch (error) {
     console.error('Usage summary failed:', error);
-    res.status(500).json({error: getErrorMessage(error)});
+    res.status(500).json({ error: getErrorMessage(error) });
   }
 });
 
 apiRouter.get('/cache/check', async (req, res) => {
   try {
-    const {claim, domain = 'GENERAL'} = req.query as {claim?: string; domain?: string};
+    const { claim, domain = 'GENERAL' } = req.query as { claim?: string; domain?: string };
     if (!claim?.trim()) {
-      res.status(400).json({error: 'Claim is required.'});
+      res.status(400).json({ error: 'Claim is required.' });
       return;
     }
 
     if (!supabase) {
-      return res.json({cached: false});
+      return res.json({ cached: false });
     }
 
     const cacheKey = generateCacheKey(claim.trim(), domain);
@@ -1220,10 +1392,10 @@ apiRouter.get('/cache/check', async (req, res) => {
       });
     }
 
-    res.json({cached: false});
+    res.json({ cached: false });
   } catch (error) {
     console.error('Cache check failed:', error);
-    res.status(500).json({error: getErrorMessage(error)});
+    res.status(500).json({ error: getErrorMessage(error) });
   }
 });
 
@@ -1334,7 +1506,7 @@ const TEST_PRESETS: Record<string, any> = {
 
 function simulateFactCheck(claim: string) {
   const lowerClaim = claim.toLowerCase().trim();
-  
+
   // Preset exact matches for the 4 test claims
   for (const [key, preset] of Object.entries(TEST_PRESETS)) {
     if (lowerClaim.includes(key) || key.includes(lowerClaim.slice(0, 20))) {
@@ -1363,7 +1535,7 @@ function simulateFactCheck(claim: string) {
       simulated: true, test_mode: true
     };
   }
-  
+
   // Rule 2: Widely accepted facts
   if (lowerClaim.includes('water') || lowerClaim.includes('earth') || lowerClaim.includes('sun') || lowerClaim.includes('gravity')) {
     return {
@@ -1388,7 +1560,7 @@ function simulateFactCheck(claim: string) {
 
 
 
-apiRouter.get('/debug-stream', (req, res) => {
+apiRouter.get('/debug-stream', requireAdmin, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -1406,14 +1578,14 @@ apiRouter.get('/debug-stream', (req, res) => {
 });
 
 
-apiRouter.post('/smoke-test', async (_req, res) => {
+apiRouter.post('/smoke-test', requireAdmin, async (_req, res) => {
   const claim = "The Eiffel Tower was built in 1999."; // Known false claim
   const startTime = Date.now();
-  
+
   try {
     const result = await simulateFactCheck(claim); // Faster for smoke test
     const latency = Date.now() - startTime;
-    
+
     res.json({
       status: 'success',
       latency,
@@ -1429,7 +1601,7 @@ apiRouter.post('/smoke-test', async (_req, res) => {
   }
 });
 
-apiRouter.post('/admin/purge', async (req, res) => {
+apiRouter.post('/admin/purge', requireAdmin, async (req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     const { table } = req.body;
@@ -1444,7 +1616,7 @@ apiRouter.post('/admin/purge', async (req, res) => {
   }
 });
 
-apiRouter.get('/admin/access-logs', async (_req, res) => {
+apiRouter.get('/admin/access-logs', requireAdmin, async (_req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     // Try 'created_at' first; fall back to 'timestamp' if schema uses that column name
@@ -1462,10 +1634,19 @@ apiRouter.get('/admin/access-logs', async (_req, res) => {
   }
 });
 
-apiRouter.post('/admin/settings', async (req, res) => {
+apiRouter.post('/admin/settings', requireAdmin, async (req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     const { settings } = req.body; // Array of {key, value}
+    if (!Array.isArray(settings) || settings.some((item: any) =>
+      !item ||
+      typeof item.key !== 'string' ||
+      typeof item.value !== 'string' ||
+      item.key.length > 100 ||
+      item.value.length > 5000
+    )) {
+      return res.status(400).json({ error: 'settings must be an array of { key, value } strings.' });
+    }
     await supabase.from('system_settings').upsert(settings);
     res.json({ success: true });
   } catch (err) {
@@ -1479,7 +1660,7 @@ app.use('/api', apiRouter);
 let vite: any;
 if (!isProduction) {
   vite = await createViteServer({
-    server: { 
+    server: {
       middlewareMode: true,
       hmr: { server: httpServer }
     },

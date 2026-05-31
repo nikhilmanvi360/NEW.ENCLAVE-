@@ -1,13 +1,22 @@
 import type {AgentResult, AgentRole, JudgeResult} from '../shared/aiSchema';
+import {supabase} from '../lib/supabase';
 
 export type {AgentResult, AgentRole, Evidence, EvidenceSummary, JudgeResult, ProcessedEvidence, SearchResult} from '../shared/aiSchema';
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (supabase) {
+    const {data} = await supabase.auth.getSession();
+    if (data.session?.access_token) {
+      headers.Authorization = `Bearer ${data.session.access_token}`;
+    }
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -27,12 +36,12 @@ function isErrorPayload(payload: unknown): payload is {error?: string} {
   return typeof payload === 'object' && payload !== null && 'error' in payload;
 }
 
-export async function callAgent(role: AgentRole, claim: string, userId?: string | null) {
-  return postJson<AgentResult>('/api/agent', {role, claim, userId});
+export async function callAgent(role: AgentRole, claim: string) {
+  return postJson<AgentResult>('/api/agent', {role, claim});
 }
 
-export async function callJudge(claim: string, agents: AgentResult[], userId?: string | null) {
-  return postJson<JudgeResult>('/api/judge', {claim, agents, userId});
+export async function callJudge(claim: string, agents: AgentResult[]) {
+  return postJson<JudgeResult>('/api/judge', {claim, agents});
 }
 
 export async function checkCache(claim: string, domain: string) {
