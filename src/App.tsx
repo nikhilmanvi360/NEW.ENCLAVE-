@@ -19,6 +19,22 @@ type PageView = 'verify' | 'history' | 'analytics' | 'review' | 'batch' | 'webho
 type AgentProgress = 'pending' | 'loading' | 'done' | 'error';
 type AgentKey = 'skeptic' | 'supporter' | 'analyst';
 type AgentResults = Record<AgentKey, AgentResult>;
+type AppPermission =
+  | 'verify:run'
+  | 'cache:read'
+  | 'usage:read:self'
+  | 'admin:read'
+  | 'admin:write'
+  | 'admin:purge'
+  | 'admin:settings'
+  | 'admin:debug'
+  | 'admin:users';
+type AppUser = {
+  id: string;
+  email?: string | null;
+  role?: 'user' | 'reviewer' | 'admin';
+  permissions?: AppPermission[];
+};
 type HistoryEntry = {
   id: string;
   claim: string;
@@ -43,6 +59,20 @@ async function getAccessToken() {
 async function getAuthHeaders() {
   const token = await getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function fetchCurrentUserProfile(user: any, accessToken?: string | null): Promise<AppUser> {
+  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : await getAuthHeaders();
+  const response = await fetch('/api/me', { headers });
+  if (!response.ok) {
+    return { id: user.id, email: user.email, role: 'user', permissions: [] };
+  }
+  const profile = await response.json();
+  return { ...user, ...profile };
+}
+
+function can(user: AppUser | null, permission: AppPermission) {
+  return Boolean(user?.permissions?.includes(permission));
 }
 
 const PLANS = [
@@ -356,7 +386,7 @@ export default function App() {
   const [inputMode, setInputMode] = useState<'text' | 'media'>('text');
   const [pageView, setPageView] = useState<PageView>('verify');
   const [uiState, setUiState] = useState<UIState>('idle');
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(() => localStorage.getItem('lumina_premium') === 'true');
   const [showCheckout, setShowCheckout] = useState(false);
@@ -366,11 +396,19 @@ export default function App() {
   // Supabase Auth listener
   useEffect(() => {
     if (!supabase) return;
+    const syncUser = async (sessionUser: any | null) => {
+      if (!sessionUser) {
+        setUser(null);
+        return;
+      }
+      setUser(await fetchCurrentUserProfile(sessionUser));
+    };
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
+      syncUser(session?.user ?? null);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      syncUser(session?.user ?? null);
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -3584,16 +3622,33 @@ function AdminMockPage({ user, onSignOut }: { user: any; onSignOut: () => void }
 }
 
 function AdminLoginPage({ onLogin, loading, setLoading }: {
-  onLogin: (user: any) => void;
+  onLogin: (user: AppUser) => void;
   loading: boolean;
   setLoading: (v: boolean) => void;
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const title = mode === 'reset' ? 'Reset Password' : mode === 'signup' ? 'Create Account' : 'Welcome Back';
+  const subtitle = mode === 'reset'
+    ? 'Enter your email and we will send a reset link.'
+    : mode === 'signup'
+      ? 'Create a workspace account for saved research and history.'
+      : 'Sign in to sync your forensic dashboard.';
+  const submitText = mode === 'reset' ? 'Send Reset Link' : mode === 'signup' ? 'Create Account' : 'Sign In';
+
+  const switchMode = (nextMode: 'signin' | 'signup' | 'reset') => {
+    setMode(nextMode);
+    setError('');
+    setSuccessMsg('');
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3602,66 +3657,92 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
     setLoading(true);
 
     try {
-      // Master Backdoor: Bypass rate limits/email confirmation if either field matches 'lumina'
-      if (email === 'lumina' || password === 'lumina' || password === 'admin123') {
-        onLogin({ email: 'dev-master@lumina.local', id: 'dev-master-uuid' });
-        setLoading(false);
-        return;
-      }
+      const normalizedEmail = email.trim().toLowerCase();
+      const trimmedPassword = password.trim();
 
       if (!supabase) {
-        setError('Supabase is not configured. Use master passcode "lumina".');
-        setLoading(false);
+        setError('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable authentication.');
         return;
       }
 
       if (mode === 'signin') {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
         if (error) { setError(error.message); }
-        else if (data.user) { onLogin(data.user); }
+        else if (data.user) { onLogin(await fetchCurrentUserProfile(data.user, data.session?.access_token)); }
       } else if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (trimmedPassword.length < 8) {
+          setError('Password must be at least 8 characters.');
+          return;
+        }
+
+        if (trimmedPassword !== confirmPassword.trim()) {
+          setError('Passwords do not match.');
+          return;
+        }
+
+        const { data, error } = await supabase.auth.signUp({ email: normalizedEmail, password: trimmedPassword });
         if (error) { setError(error.message); }
         else {
-          // Manual Sync Fallback: Ensure profile is created even if trigger isn't set up yet
-          if (data.user) {
-            await supabase.from('profiles').upsert({
+          // Fallback for local schemas where the auth trigger has not been applied yet.
+          if (data.user && data.session) {
+            await supabase.from('profiles').insert({
               id: data.user.id,
-              email: data.user.email,
-              role: 'user'
-            });
+              email: data.user.email
+            }).select('id').maybeSingle();
           }
           setSuccessMsg('Check your email for a confirmation link, then sign in.');
-          setMode('signin');
+          switchMode('signin');
         }
       } else if (mode === 'reset') {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
           redirectTo: window.location.origin
         });
         if (error) { setError(error.message); }
-        else { setSuccessMsg('Password reset email sent! Check your inbox.'); setMode('signin'); }
+        else { switchMode('signin'); setSuccessMsg('Password reset email sent. Check your inbox.'); }
       }
     } catch (err: any) {
       setError(err?.message || 'An unexpected error occurred.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
-    <div className="animate-in fade-in zoom-in-95 duration-500 max-w-md mx-auto mt-16">
-      <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-2xl text-center relative overflow-hidden">
+    <div className="animate-in fade-in zoom-in-95 duration-500 w-full max-w-md mx-auto">
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-2xl text-center relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
 
-        <div className="w-20 h-20 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border border-indigo-100">
-          <Shield className="w-10 h-10 text-indigo-600" />
+        <div className="w-16 h-16 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-inner border border-indigo-100">
+          <Shield className="w-8 h-8 text-indigo-600" />
         </div>
 
         <h2 className="text-2xl font-black text-slate-900 mb-1 tracking-tight">
-          {mode === 'reset' ? 'Reset Password' : mode === 'signup' ? 'Create Account' : 'Secure Access'}
+          {title}
         </h2>
-        <p className="text-slate-400 text-sm font-medium mb-8">
-          {mode === 'reset' ? 'Enter your email to receive a reset link.' : mode === 'signup' ? 'Join LUMINA to track your research history.' : 'Sign in to sync your forensic dashboard.'}
+        <p className="text-slate-500 text-sm font-medium mb-6">
+          {subtitle}
         </p>
+
+        {mode !== 'reset' && (
+          <div className="grid grid-cols-2 gap-1 p-1 mb-6 bg-slate-100 rounded-2xl">
+            <button
+              type="button"
+              onClick={() => switchMode('signin')}
+              disabled={loading}
+              className={`py-2.5 rounded-xl text-xs font-black transition-all ${mode === 'signin' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('signup')}
+              disabled={loading}
+              className={`py-2.5 rounded-xl text-xs font-black transition-all ${mode === 'signup' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+            >
+              Sign Up
+            </button>
+          </div>
+        )}
 
         {error && (
           <div className="mb-6 px-4 py-3 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-3 text-left animate-in slide-in-from-top-2">
@@ -3687,7 +3768,9 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="admin@yourdomain.com"
-                className="bg-transparent outline-none w-full text-sm text-slate-800 placeholder:text-slate-300"
+                autoComplete="email"
+                disabled={loading}
+                className="bg-transparent outline-none w-full text-sm text-slate-800 placeholder:text-slate-300 disabled:opacity-60"
                 required
                 autoFocus
               />
@@ -3704,13 +3787,35 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={mode === 'signup' ? 'Min 8 characters...' : 'Your password...'}
-                  className="bg-transparent outline-none w-full text-sm text-slate-800 placeholder:text-slate-300"
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                  disabled={loading}
+                  className="bg-transparent outline-none w-full text-sm text-slate-800 placeholder:text-slate-300 disabled:opacity-60"
                   required
                   minLength={mode === 'signup' ? 8 : 1}
                 />
-                <button type="button" onClick={() => setShowPassword(!showPassword)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                <button type="button" onClick={() => setShowPassword(!showPassword)} disabled={loading} className="text-slate-400 hover:text-slate-600 transition-colors disabled:opacity-50">
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {mode === 'signup' && (
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Confirm Password</label>
+              <div className="flex items-center gap-3 px-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
+                <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Repeat password..."
+                  autoComplete="new-password"
+                  disabled={loading}
+                  className="bg-transparent outline-none w-full text-sm text-slate-800 placeholder:text-slate-300 disabled:opacity-60"
+                  required
+                  minLength={8}
+                />
               </div>
             </div>
           )}
@@ -3721,26 +3826,22 @@ function AdminLoginPage({ onLogin, loading, setLoading }: {
             className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold text-sm shadow-lg hover:bg-indigo-600 hover:shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 disabled:opacity-50 mt-2"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Shield className="w-5 h-5" />}
-            {loading ? 'Authenticating...' : mode === 'reset' ? 'Send Reset Link' : mode === 'signup' ? 'Create Account' : 'Sign In'}
+            {loading ? 'Working...' : submitText}
           </button>
         </form>
 
         <div className="mt-6 flex items-center justify-center gap-4 text-xs font-bold text-slate-400">
           {mode === 'signin' && (
             <>
-              <button onClick={() => { setMode('signup'); setError(''); }} className="hover:text-indigo-600 transition-colors">Create Account</button>
-              <span>·</span>
-              <button onClick={() => { setMode('reset'); setError(''); }} className="hover:text-indigo-600 transition-colors">Forgot Password?</button>
+              <button type="button" onClick={() => switchMode('signup')} className="hover:text-indigo-600 transition-colors">Create Account</button>
+              <span>/</span>
+              <button type="button" onClick={() => switchMode('reset')} className="hover:text-indigo-600 transition-colors">Forgot Password?</button>
             </>
           )}
           {mode !== 'signin' && (
-            <button onClick={() => { setMode('signin'); setError(''); }} className="hover:text-indigo-600 transition-colors">← Back to Sign In</button>
+            <button type="button" onClick={() => switchMode('signin')} className="hover:text-indigo-600 transition-colors">Back to Sign In</button>
           )}
         </div>
-
-        <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mt-8 border-t border-slate-100 pt-4">
-          Stuck? Type <span className="text-indigo-400">lumina</span> in any field to bypass rate limits.
-        </p>
       </div>
     </div>
   );
@@ -3765,7 +3866,7 @@ function UpgradeBanner({ onUpgrade }: { onUpgrade: () => void }) {
   );
 }
 
-function LoginModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: (user: any) => void }) {
+function LoginModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: (user: AppUser) => void }) {
   const [loading, setLoading] = useState(false);
 
   return (
@@ -3779,17 +3880,15 @@ function LoginModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: (u
       <motion.div
         initial={{ opacity: 0, scale: 0.9, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="relative bg-white w-full max-w-md rounded-[3rem] shadow-2xl overflow-hidden border border-white/20"
+        className="relative w-full max-w-md"
       >
         <button
           onClick={onClose}
-          className="absolute top-8 right-8 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-10"
+          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-10"
         >
           <Trash2 className="w-5 h-5 rotate-45" />
         </button>
-        <div className="pt-4">
-          <AdminLoginPage onLogin={onSuccess} loading={loading} setLoading={setLoading} />
-        </div>
+        <AdminLoginPage onLogin={onSuccess} loading={loading} setLoading={setLoading} />
       </motion.div>
     </div>
   );

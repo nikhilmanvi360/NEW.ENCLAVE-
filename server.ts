@@ -70,9 +70,48 @@ type AuthContext = {
   role?: string | null;
   email?: string | null;
   is_api?: boolean;
+  scopes?: string[];
 };
 
 type AuthedRequest = express.Request & { user?: AuthContext };
+
+type AppRole = 'anonymous' | 'user' | 'reviewer' | 'admin';
+type Permission =
+  | 'verify:run'
+  | 'cache:read'
+  | 'usage:read:self'
+  | 'admin:read'
+  | 'admin:write'
+  | 'admin:purge'
+  | 'admin:settings'
+  | 'admin:debug'
+  | 'admin:users';
+
+const ROLE_PERMISSIONS: Record<AppRole, Permission[]> = {
+  anonymous: ['verify:run', 'cache:read'],
+  user: ['verify:run', 'cache:read', 'usage:read:self'],
+  reviewer: ['verify:run', 'cache:read', 'usage:read:self'],
+  admin: ['verify:run', 'cache:read', 'usage:read:self', 'admin:read', 'admin:write', 'admin:purge', 'admin:settings', 'admin:debug', 'admin:users'],
+};
+
+function normalizeRole(role?: string | null): AppRole {
+  if (role === 'admin' || role === 'reviewer' || role === 'user') return role;
+  return 'user';
+}
+
+function permissionListFor(user: AuthContext | null | undefined): Permission[] {
+  const role = user?.id ? normalizeRole(user.role) : 'anonymous';
+  return ROLE_PERMISSIONS[role];
+}
+
+function hasPermission(user: AuthContext | null | undefined, permission: Permission) {
+  const roleAllowed = permissionListFor(user).includes(permission);
+  if (!roleAllowed) return false;
+
+  if (!user?.is_api) return true;
+  const scopes = user.scopes || [];
+  return scopes.includes('*') || scopes.includes(permission) || scopes.includes(`${permission.split(':')[0]}:*`);
+}
 
 const debugEmitter = new EventEmitter();
 
@@ -148,7 +187,7 @@ async function logUsage(userId: string | null, eventType: string, domain: string
 async function isTestMode(user: AuthContext | null) {
   if (!supabase) return false;
 
-  if (!user?.id || user.role !== 'admin') return false;
+  if (!hasPermission(user, 'admin:settings')) return false;
 
   return (await getDynamicKey('test_mode', process.env.TEST_MODE || 'false')) === 'true';
 }
@@ -236,18 +275,21 @@ function getBearerToken(req: express.Request) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
   if (scheme?.toLowerCase() === 'bearer' && token) return token;
-  const queryToken = req.query.access_token;
-  return typeof queryToken === 'string' && queryToken ? queryToken : null;
+  return null;
 }
 
 async function hydrateUserRole(user: AuthContext): Promise<AuthContext> {
   if (!supabase) return user;
   const { data: profile } = await supabase
     .from('profiles')
-    .select('role')
+    .select('role, email')
     .eq('id', user.id)
     .single();
-  return { ...user, role: profile?.role || user.role || null };
+  return {
+    ...user,
+    role: normalizeRole(profile?.role || user.role),
+    email: user.email || profile?.email || null,
+  };
 }
 
 // Enterprise API Key Middleware
@@ -277,7 +319,10 @@ async function authenticateApiKey(req: AuthedRequest, res: express.Response, nex
     if (!validKey) return res.status(401).json({ error: 'Invalid API Key' });
 
     // Attach user context to request
-    req.user = await hydrateUserRole({ id: validKey.user_id, is_api: true });
+    const scopes = Array.isArray(validKey.scopes) && validKey.scopes.length > 0
+      ? validKey.scopes
+      : ['verify:run', 'cache:read', 'usage:read:self'];
+    req.user = await hydrateUserRole({ id: validKey.user_id, is_api: true, scopes });
 
     // Fire-and-forget last_used update
     supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', validKey.id).then();
@@ -326,12 +371,19 @@ async function requireUser(req: AuthedRequest, res: express.Response, next: expr
 }
 
 async function requireAdmin(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
-  await requireUser(req, res, () => {
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required.' });
-    }
-    next();
-  });
+  return requirePermission('admin:read')(req, res, next);
+}
+
+function requirePermission(permission: Permission) {
+  return async (req: AuthedRequest, res: express.Response, next: express.NextFunction) => {
+    await authenticateOptionalUser(req, res, () => {
+      if (!hasPermission(req.user || null, permission)) {
+        const status = req.user?.id ? 403 : 401;
+        return res.status(status).json({ error: `Permission required: ${permission}` });
+      }
+      next();
+    });
+  };
 }
 
 async function getDynamicKey(key: string, envFallback: string) {
@@ -346,13 +398,11 @@ async function getDynamicKey(key: string, envFallback: string) {
 
 async function generateEmbedding(text: string) {
   try {
-    // @google/genai v1.x API — use models.embedContent
     const result = await (genAI as any).models.embedContent({
       model: 'text-embedding-004',
       contents: [text],
     });
-    // Response shape: { embedding: { values: number[] } }
-    return result?.embedding?.values ?? null;
+    return result?.embeddings?.[0]?.values ?? result?.embedding?.values ?? null;
   } catch (error) {
     console.error('Embedding generation failed:', error);
     return null;
@@ -710,8 +760,7 @@ async function callGemini(modelName: string, systemInstruction: string, prompt: 
     config,
   });
 
-  // Extract text from candidates[0].content.parts[0].text
-  const text = result?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+  const text = result?.text || '{}';
   return parseJsonResponse(text);
 }
 
@@ -1031,7 +1080,7 @@ app.use(express.json({ limit: '1mb' }));
 
 // Request Logger for Debugging
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
@@ -1091,8 +1140,6 @@ app.get('/api/radar-stream', (req, res) => {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Credentials': 'true',
     'X-Accel-Buffering': 'no',
   });
   res.write('retry: 5000\n\n');
@@ -1118,7 +1165,18 @@ startRadarTicker();
 // Unified Server & Vite Initialization
 const httpServer = http.createServer(app);
 
-apiRouter.post('/agent', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
+apiRouter.get('/me', requireUser, async (req: AuthedRequest, res) => {
+  const user = req.user!;
+  res.json({
+    id: user.id,
+    email: user.email,
+    role: normalizeRole(user.role),
+    permissions: permissionListFor(user),
+    is_api: Boolean(user.is_api),
+  });
+});
+
+apiRouter.post('/agent', requirePermission('verify:run'), rateLimitVerify, async (req: AuthedRequest, res) => {
   try {
     const { role, claim } = req.body as { role?: AgentRole; claim?: string };
     if (!role || !['SKEPTIC', 'SUPPORTER', 'ANALYST'].includes(role) || !claim?.trim()) {
@@ -1156,7 +1214,7 @@ apiRouter.post('/agent', authenticateOptionalUser, rateLimitVerify, async (req: 
   }
 });
 
-apiRouter.post('/judge', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
+apiRouter.post('/judge', requirePermission('verify:run'), rateLimitVerify, async (req: AuthedRequest, res) => {
   try {
     const { claim, agents } = req.body as {
       claim?: string;
@@ -1194,7 +1252,7 @@ apiRouter.post('/judge', authenticateOptionalUser, rateLimitVerify, async (req: 
   }
 });
 
-apiRouter.post('/verify', authenticateOptionalUser, rateLimitVerify, async (req: AuthedRequest, res) => {
+apiRouter.post('/verify', requirePermission('verify:run'), rateLimitVerify, async (req: AuthedRequest, res) => {
   const startTime = Date.now();
   try {
     const { claim, domain = 'GENERAL' } = req.body as { claim?: string; domain?: string };
@@ -1310,7 +1368,7 @@ apiRouter.post('/verify', authenticateOptionalUser, rateLimitVerify, async (req:
   }
 });
 
-apiRouter.get('/usage/summary', requireUser, async (req: AuthedRequest, res) => {
+apiRouter.get('/usage/summary', requirePermission('usage:read:self'), async (req: AuthedRequest, res) => {
   try {
     const { days = 30 } = req.query as { days?: string };
     const userId = req.user!.id;
@@ -1364,7 +1422,7 @@ apiRouter.get('/usage/summary', requireUser, async (req: AuthedRequest, res) => 
   }
 });
 
-apiRouter.get('/cache/check', async (req, res) => {
+apiRouter.get('/cache/check', requirePermission('cache:read'), async (req, res) => {
   try {
     const { claim, domain = 'GENERAL' } = req.query as { claim?: string; domain?: string };
     if (!claim?.trim()) {
@@ -1560,7 +1618,7 @@ function simulateFactCheck(claim: string) {
 
 
 
-apiRouter.get('/debug-stream', requireAdmin, (req, res) => {
+apiRouter.get('/debug-stream', requirePermission('admin:debug'), (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -1578,7 +1636,7 @@ apiRouter.get('/debug-stream', requireAdmin, (req, res) => {
 });
 
 
-apiRouter.post('/smoke-test', requireAdmin, async (_req, res) => {
+apiRouter.post('/smoke-test', requirePermission('admin:read'), async (_req, res) => {
   const claim = "The Eiffel Tower was built in 1999."; // Known false claim
   const startTime = Date.now();
 
@@ -1601,7 +1659,7 @@ apiRouter.post('/smoke-test', requireAdmin, async (_req, res) => {
   }
 });
 
-apiRouter.post('/admin/purge', requireAdmin, async (req, res) => {
+apiRouter.post('/admin/purge', requirePermission('admin:purge'), async (req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     const { table } = req.body;
@@ -1616,7 +1674,7 @@ apiRouter.post('/admin/purge', requireAdmin, async (req, res) => {
   }
 });
 
-apiRouter.get('/admin/access-logs', requireAdmin, async (_req, res) => {
+apiRouter.get('/admin/access-logs', requirePermission('admin:read'), async (_req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     // Try 'created_at' first; fall back to 'timestamp' if schema uses that column name
@@ -1634,7 +1692,49 @@ apiRouter.get('/admin/access-logs', requireAdmin, async (_req, res) => {
   }
 });
 
-apiRouter.post('/admin/settings', requireAdmin, async (req, res) => {
+apiRouter.get('/admin/performance', requirePermission('admin:read'), async (_req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    let result = await supabase.from('performance_logs').select('*').order('created_at', { ascending: false }).limit(50);
+    if (result.error) {
+      result = await supabase.from('performance_logs').select('*').limit(50);
+    }
+    if (result.error) throw result.error;
+    res.json(result.data || []);
+  } catch (err) {
+    console.error('performance error:', err);
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+apiRouter.get('/admin/users', requirePermission('admin:users'), async (_req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, role, credits, created_at')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('users error:', err);
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+apiRouter.get('/admin/settings', requirePermission('admin:settings'), async (_req, res) => {
+  if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
+  try {
+    const { data, error } = await supabase.from('system_settings').select('*');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: getErrorMessage(err) });
+  }
+});
+
+apiRouter.post('/admin/settings', requirePermission('admin:settings'), async (req, res) => {
   if (!supabase) return res.status(500).json({ error: 'Supabase not connected' });
   try {
     const { settings } = req.body; // Array of {key, value}
